@@ -15,7 +15,6 @@ class ConnectionsRubric(Rubric):
         # - Rewards for playing the game well
         self.add_reward_func(self.almost_found_categories, 0.5)
         self.add_reward_func(self.found_categories)
-        self.add_reward_func(self.difficulty_bonus)
         self.add_reward_func(self.efficiency_bonus)
 
     def guessed_4_words(self, completion, answer, state) -> float:
@@ -122,27 +121,6 @@ class ConnectionsRubric(Rubric):
         Returns the total number of categories found throughout the game.
         """
         return float(state.get("found_categories", 0))
-
-    def difficulty_bonus(self, completion, answer, state, info) -> float:
-        """
-        Bonus based on difficulty levels of all found categories.
-        Level 0 (easiest) gives no bonus, higher levels give increasing bonuses.
-        """
-        found_categories = state.get("found_categories", 0)
-        if found_categories == 0:
-            return 0.0
-
-        # Calculate bonus based on difficulty levels of found categories
-        # We assume categories are found in order of discovery
-        total_bonus = 0.0
-        for i in range(min(found_categories, len(info["categories"]))):
-            category = info["categories"][i]
-            difficulty_level = category.get("level", 0)
-            # Level 0 = 0 bonus, Level 1 = 0.33, Level 2 = 0.67, Level 3 = 1.0
-            if difficulty_level > 0:  # No bonus for easiest categories
-                total_bonus += difficulty_level / 3.0
-
-        return total_bonus
 
     def efficiency_bonus(self, completion, answer, state) -> float:
         """

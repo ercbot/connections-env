@@ -16,7 +16,7 @@
 
 - **Type**: multi-turn
 - **Parser**: XMLParser (custom ConnectionsParser extending XMLParser)
-- **Rubric overview**: Rewards valid guesses (0.75x), almost-correct guesses (0.5x), found categories (1.0x each), difficulty bonuses, and efficiency bonuses
+- **Rubric overview**: Rewards valid guesses (0.75x), almost-correct guesses (0.5x), found categories (1.0x each), and efficiency bonuses
 
 ### Quickstart
 
@@ -56,5 +56,4 @@ The rubric combines validity and correctness rewards:
 | `all_words_valid`          | Proportion of guesses where all 4 words were valid (0.25x weight)  |
 | `almost_found_categories`  | Count of 3/4 correct guesses per category (0.5x weight)            |
 | `found_categories`         | Total categories successfully found (1.0x weight each)             |
-| `difficulty_bonus`         | Bonus based on difficulty levels of found categories (1.0x weight) |
 | `efficiency_bonus`         | Reward for finding categories with fewer guesses (1.0x weight)     |
