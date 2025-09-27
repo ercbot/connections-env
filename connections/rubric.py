@@ -8,28 +8,33 @@ class ConnectionsRubric(Rubric):
         super().__init__(parser=parser, **kwargs)
         # Validity Reward Funcs
         # - Rewards for correctly following the rules of the game
-        self.add_reward_func(self.guessed_4_words, 0.25)
+        self.add_reward_func(self.guessed_correct_number_of_words, 0.25)
         self.add_reward_func(self.proportional_valid_words, 0.25)
         self.add_reward_func(self.all_words_valid, 0.25)
         # Correctness Reward Funcs
         # - Rewards for playing the game well
         self.add_reward_func(self.almost_found_categories, 0.5)
-        self.add_reward_func(self.found_categories)
+        self.add_reward_func(self.found_categories, 4.0)
         self.add_reward_func(self.efficiency_bonus)
 
-    def guessed_4_words(self, completion, answer, state) -> float:
+    def guessed_correct_number_of_words(self, completion, answer, state, info) -> float:
         """
-        Proportion of guesses that had exactly 4 words.
+        Proportion of guesses that had the correct number of words.
         """
         total_guesses = sum(1 for msg in completion if msg.get("role") == "assistant")
         if total_guesses == 0:
             return 0.0
 
+        # Get expected group size from the first category
+        expected_group_size = (
+            len(info["categories"][0]["members"]) if info["categories"] else 4
+        )
+
         valid_format_guesses = 0
         for msg in completion:
             if msg.get("role") == "assistant":
                 response = self.parser.parse_answer_as_list(msg["content"])
-                if len(response) == 4:
+                if len(response) == expected_group_size:
                     valid_format_guesses += 1
 
         return valid_format_guesses / total_guesses
@@ -66,14 +71,18 @@ class ConnectionsRubric(Rubric):
         for category in info["categories"]:
             all_game_words.update([word.lower() for word in category["members"]])
 
-        # Track which categories we've already given "almost found" credit for
+        # Get expected group size
+        expected_group_size = (
+            len(info["categories"][0]["members"]) if info["categories"] else 4
+        )
+
         perfect_guesses = 0
         total_guesses = 0
 
         for msg in completion:
             if msg.get("role") == "assistant":
                 response = self.parser.parse_answer_as_list(msg["content"])
-                if response and len(response) == 4:
+                if response and len(response) == expected_group_size:
                     valid_count = sum(1 for word in response if word in all_game_words)
                     if valid_count == len(response):
                         perfect_guesses += 1
@@ -83,7 +92,7 @@ class ConnectionsRubric(Rubric):
 
     def almost_found_categories(self, completion, answer, state, info) -> float:
         """
-        Count all guesses where the model guessed 3/4 words in a category.
+        Count all guesses where the model guessed almost all words in a category (e.g., 3/4).
         Can only be given once per category, and is not given if that category was later correctly guessed.
         """
         # Get categories that were successfully found (don't reward for these)
@@ -92,22 +101,33 @@ class ConnectionsRubric(Rubric):
         # Track which categories we've already given "almost found" credit for
         almost_found_categories = set()
 
+        # Get expected group size and calculate "almost" threshold
+        expected_group_size = (
+            len(info["categories"][0]["members"]) if info["categories"] else 4
+        )
+        almost_threshold = expected_group_size - 1  # e.g., 3 for 4-word groups
+
         # Go through all assistant messages
         for msg in completion:
             if msg.get("role") == "assistant":
                 response = self.parser.parse_answer_as_list(msg["content"])
-                if len(response) == 4:  # Only count proper 4-word guesses
+                if (
+                    len(response) == expected_group_size
+                ):  # Only count proper-sized guesses
                     response_set = set(response)
 
-                    # Check each category to see if this guess had 3/4 words from it
+                    # Check each category to see if this guess was almost correct
                     for i, category in enumerate(info["categories"]):
                         category_words = set(
                             [word.lower() for word in category["members"]]
                         )
                         overlap = len(response_set & category_words)
 
-                        # If exactly 3/4 words match and we haven't counted this category yet
-                        if overlap == 3 and i not in almost_found_categories:
+                        # If almost all words match and we haven't counted this category yet
+                        if (
+                            overlap == almost_threshold
+                            and i not in almost_found_categories
+                        ):
                             almost_found_categories.add(i)
 
         # Don't count categories that were later successfully found
@@ -116,11 +136,15 @@ class ConnectionsRubric(Rubric):
 
         return float(categories_to_reward)
 
-    def found_categories(self, completion, answer, state) -> float:
+    def found_categories(self, completion, answer, state, info) -> float:
         """
-        Returns the total number of categories found throughout the game.
+        Returns the proportion of categories found throughout the game (0.0-1.0).
+        Normalized by total categories to ensure fair scoring across different puzzle sizes.
         """
-        return float(state.get("found_categories", 0))
+        total_categories = len(info["categories"])
+        if total_categories == 0:
+            return 0.0
+        return float(state.get("found_categories", 0)) / total_categories
 
     def efficiency_bonus(self, completion, answer, state) -> float:
         """

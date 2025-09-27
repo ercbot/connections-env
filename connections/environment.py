@@ -80,8 +80,8 @@ class ConnectionsEnv(MultiTurnEnv):
         ):
             return True
 
-        # Check if we've made 4 mistakes
-        if state.get("mistakes", 0) >= 4:
+        # Check if we've made max mistakes
+        if state.get("mistakes", 0) >= self.ruleset_config.max_mistakes:
             return True
 
         # Check if we've found all categories
@@ -90,6 +90,13 @@ class ConnectionsEnv(MultiTurnEnv):
             return True
 
         return False
+
+    def _should_count_mistakes(self, state: dict) -> bool:
+        """
+        Determine if mistakes should be counted based on ruleset configuration.
+        """
+        remaining_categories = len(state.get("info", {}).get("categories", [])) - state.get("found_categories", 0)
+        return remaining_categories <= self.ruleset_config.mistakes_start_counting_at
 
     async def env_response(
         self, messages: list[dict], state: dict, **kwargs: Any
@@ -124,12 +131,14 @@ class ConnectionsEnv(MultiTurnEnv):
         except Exception as e:
             print(e)
             print(last_message["content"])
-            # If parsing fails, count as a mistake
-            state["mistakes"] += 1
+            # If parsing fails, count as a mistake (if mistakes are being counted)
+            if self._should_count_mistakes(state):
+                state["mistakes"] += 1
+            mistake_display = f" Mistakes: {state['mistakes']}/{self.ruleset_config.max_mistakes}" if self._should_count_mistakes(state) else ""
             return [
                 {
                     "role": "user",
-                    "content": f"Invalid format. Please guess exactly 4 words separated by commas. Mistakes: {state['mistakes']}/4",
+                    "content": f"Invalid format. Please guess exactly 4 words separated by commas.{mistake_display}",
                 }
             ], state
 
@@ -142,11 +151,13 @@ class ConnectionsEnv(MultiTurnEnv):
 
         # Validate the guess
         if len(guessed_words) != expected_group_size:
-            state["mistakes"] += 1
+            if self._should_count_mistakes(state):
+                state["mistakes"] += 1
+            mistake_display = f" Mistakes: {state['mistakes']}/{self.ruleset_config.max_mistakes}" if self._should_count_mistakes(state) else ""
             return [
                 {
                     "role": "user",
-                    "content": f"Please guess exactly {expected_group_size} words. You guessed {len(guessed_words)}. Mistakes: {state['mistakes']}/4",
+                    "content": f"Please guess exactly {expected_group_size} words. You guessed {len(guessed_words)}.{mistake_display}",
                 }
             ], state
 
@@ -155,22 +166,26 @@ class ConnectionsEnv(MultiTurnEnv):
             word for word in guessed_words if word not in state["all_words"]
         ]
         if invalid_words:
-            state["mistakes"] += 1
+            if self._should_count_mistakes(state):
+                state["mistakes"] += 1
+            mistake_display = f" Mistakes: {state['mistakes']}/{self.ruleset_config.max_mistakes}" if self._should_count_mistakes(state) else ""
             return [
                 {
                     "role": "user",
-                    "content": f"Invalid words: {', '.join(invalid_words)}. These words are not in the game. Mistakes: {state['mistakes']}/4",
+                    "content": f"Invalid words: {', '.join(invalid_words)}. These words are not in the game.{mistake_display}",
                 }
             ], state
 
         # Check if words are already found
         already_found = [word for word in guessed_words if word in state["found_words"]]
         if already_found:
-            state["mistakes"] += 1
+            if self._should_count_mistakes(state):
+                state["mistakes"] += 1
+            mistake_display = f" Mistakes: {state['mistakes']}/{self.ruleset_config.max_mistakes}" if self._should_count_mistakes(state) else ""
             return [
                 {
                     "role": "user",
-                    "content": f"Words already found: {', '.join(already_found)}. Mistakes: {state['mistakes']}/4",
+                    "content": f"Words already found: {', '.join(already_found)}.{mistake_display}",
                 }
             ], state
 
@@ -188,7 +203,12 @@ class ConnectionsEnv(MultiTurnEnv):
             state["found_words"].update(guessed_words)
 
             total_categories = len(state["info"]["categories"])
-            response = f"Correct! Category {state['found_categories']}/{total_categories} found: {correct_category['group']} - {', '.join(correct_category['members'])}"
+
+            # Build response based on theme revelation setting
+            if self.ruleset_config.reveal_themes_immediately:
+                response = f"Correct! Category {state['found_categories']}/{total_categories} found: {correct_category['group']} - {', '.join(correct_category['members'])}"
+            else:
+                response = f"Correct! Category {state['found_categories']}/{total_categories} found. Theme will be revealed at the end."
 
             if state["found_categories"] >= total_categories:
                 response += "\n🎉 Congratulations! You've found all categories!"
@@ -202,19 +222,23 @@ class ConnectionsEnv(MultiTurnEnv):
 
         else:
             # Incorrect guess
-            state["mistakes"] += 1
+            if self._should_count_mistakes(state):
+                state["mistakes"] += 1
 
-            # Check for "One Away" (3 correct words)
-            max_correct = 0
-            for category in state["info"]["categories"]:
-                category_words = set([word.lower() for word in category["members"]])
-                correct_count = len(set(guessed_words) & category_words)
-                if correct_count > max_correct:
-                    max_correct = correct_count
+            # Check for "One Away" (3 correct words) if ruleset allows
+            one_away_msg = ""
+            if self.ruleset_config.show_one_away_hints:
+                max_correct = 0
+                for category in state["info"]["categories"]:
+                    category_words = set([word.lower() for word in category["members"]])
+                    correct_count = len(set(guessed_words) & category_words)
+                    if correct_count > max_correct:
+                        max_correct = correct_count
 
-            if max_correct == 3:
-                response = f"One away! Mistakes: {state['mistakes']}/4"
-            else:
-                response = f"Incorrect guess. Mistakes: {state['mistakes']}/4"
+                if max_correct == expected_group_size - 1:  # One away (e.g., 3/4)
+                    one_away_msg = "One away! "
+
+            mistake_display = f" Mistakes: {state['mistakes']}/{self.ruleset_config.max_mistakes}" if self._should_count_mistakes(state) else ""
+            response = f"{one_away_msg}Incorrect guess.{mistake_display}"
 
         return [{"role": "user", "content": response}], state
