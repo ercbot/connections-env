@@ -1,3 +1,4 @@
+import logging
 from typing import Any
 from verifiers import MultiTurnEnv
 from datasets import Dataset
@@ -5,9 +6,12 @@ from datasets import Dataset
 from .dataset import prep_dataset
 from .parser import ConnectionsParser
 from .rubric import ConnectionsRubric
-from .rulesets import get_ruleset_config, generate_system_prompt
+from .rulesets import get_ruleset_config
+from .prompts import generate_system_prompt
 
 from datasets import load_dataset
+
+logger = logging.getLogger(__name__)
 
 
 class ConnectionsEnv(MultiTurnEnv):
@@ -17,7 +21,7 @@ class ConnectionsEnv(MultiTurnEnv):
 
     def __init__(
         self,
-        ruleset: str = "nyt",
+        ruleset: str = "puzzgrid",
         dataset: Dataset | None = None,
         eval_dataset: Dataset | None = None,
         max_turns: int = 10,
@@ -25,33 +29,18 @@ class ConnectionsEnv(MultiTurnEnv):
     ):
         # Get ruleset configuration
         self.ruleset_config = get_ruleset_config(ruleset)
-        
+
         parser: ConnectionsParser = ConnectionsParser()
         rubric = ConnectionsRubric(parser=parser, ruleset_config=self.ruleset_config)
 
         # If no datasets provided, load and prep the default HuggingFace dataset
         if dataset is None:
             dataset_dict = load_dataset("ericbotti/connections-puzzles")
-            dataset, eval_dataset = prep_dataset(dataset_dict)
+            dataset, eval_dataset = prep_dataset(dataset_dict, self.ruleset_config)
         # Otherwise, assume user-provided datasets are already in correct format
 
-        # Generate dynamic system prompt based on ruleset and expected group size
-        # We'll use the first example to determine group size for now
-        expected_group_size = 4  # Default fallback
-        total_categories = 4     # Default fallback
-        if dataset is not None and len(dataset) > 0:
-            first_example = dataset[0]
-            if "info" in first_example and "categories" in first_example["info"]:
-                categories = first_example["info"]["categories"]
-                if categories:
-                    expected_group_size = len(categories[0]["members"])
-                    total_categories = len(categories)
-
-        system_prompt = generate_system_prompt(
-            self.ruleset_config, 
-            expected_group_size, 
-            total_categories
-        )
+        # Generate system prompt based on ruleset configuration
+        system_prompt = generate_system_prompt(self.ruleset_config)
 
         super().__init__(
             dataset=dataset,
@@ -95,7 +84,9 @@ class ConnectionsEnv(MultiTurnEnv):
         """
         Determine if mistakes should be counted based on ruleset configuration.
         """
-        remaining_categories = len(state.get("info", {}).get("categories", [])) - state.get("found_categories", 0)
+        remaining_categories = len(
+            state.get("info", {}).get("categories", [])
+        ) - state.get("found_categories", 0)
         return remaining_categories <= self.ruleset_config.mistakes_start_counting_at
 
     async def env_response(
@@ -129,12 +120,16 @@ class ConnectionsEnv(MultiTurnEnv):
         try:
             guessed_words = self.parser.parse_answer_as_list(last_message["content"])
         except Exception as e:
-            print(e)
-            print(last_message["content"])
+            logger.error(f"Failed to parse guess: {e}")
+            logger.error(f"Content: {last_message['content']}")
             # If parsing fails, count as a mistake (if mistakes are being counted)
             if self._should_count_mistakes(state):
                 state["mistakes"] += 1
-            mistake_display = f" Mistakes: {state['mistakes']}/{self.ruleset_config.max_mistakes}" if self._should_count_mistakes(state) else ""
+            mistake_display = (
+                f" Mistakes: {state['mistakes']}/{self.ruleset_config.max_mistakes}"
+                if self._should_count_mistakes(state)
+                else ""
+            )
             return [
                 {
                     "role": "user",
@@ -153,7 +148,11 @@ class ConnectionsEnv(MultiTurnEnv):
         if len(guessed_words) != expected_group_size:
             if self._should_count_mistakes(state):
                 state["mistakes"] += 1
-            mistake_display = f" Mistakes: {state['mistakes']}/{self.ruleset_config.max_mistakes}" if self._should_count_mistakes(state) else ""
+            mistake_display = (
+                f" Mistakes: {state['mistakes']}/{self.ruleset_config.max_mistakes}"
+                if self._should_count_mistakes(state)
+                else ""
+            )
             return [
                 {
                     "role": "user",
@@ -168,7 +167,11 @@ class ConnectionsEnv(MultiTurnEnv):
         if invalid_words:
             if self._should_count_mistakes(state):
                 state["mistakes"] += 1
-            mistake_display = f" Mistakes: {state['mistakes']}/{self.ruleset_config.max_mistakes}" if self._should_count_mistakes(state) else ""
+            mistake_display = (
+                f" Mistakes: {state['mistakes']}/{self.ruleset_config.max_mistakes}"
+                if self._should_count_mistakes(state)
+                else ""
+            )
             return [
                 {
                     "role": "user",
@@ -181,7 +184,11 @@ class ConnectionsEnv(MultiTurnEnv):
         if already_found:
             if self._should_count_mistakes(state):
                 state["mistakes"] += 1
-            mistake_display = f" Mistakes: {state['mistakes']}/{self.ruleset_config.max_mistakes}" if self._should_count_mistakes(state) else ""
+            mistake_display = (
+                f" Mistakes: {state['mistakes']}/{self.ruleset_config.max_mistakes}"
+                if self._should_count_mistakes(state)
+                else ""
+            )
             return [
                 {
                     "role": "user",
@@ -238,7 +245,11 @@ class ConnectionsEnv(MultiTurnEnv):
                 if max_correct == expected_group_size - 1:  # One away (e.g., 3/4)
                     one_away_msg = "One away! "
 
-            mistake_display = f" Mistakes: {state['mistakes']}/{self.ruleset_config.max_mistakes}" if self._should_count_mistakes(state) else ""
+            mistake_display = (
+                f" Mistakes: {state['mistakes']}/{self.ruleset_config.max_mistakes}"
+                if self._should_count_mistakes(state)
+                else ""
+            )
             response = f"{one_away_msg}Incorrect guess.{mistake_display}"
 
         return [{"role": "user", "content": response}], state

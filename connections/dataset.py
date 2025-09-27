@@ -1,14 +1,9 @@
 from datasets import Dataset, DatasetDict
-
-connections_starting_prompt = """\
-Words: {words}
-
-You have found 0 categories.
-You have 4 mistakes remaining.
-"""
+from .prompts.game_start import generate_game_start_prompt
+from .rulesets import RulesetConfig
 
 
-def prep_dataset(dataset_dict: DatasetDict) -> tuple[Dataset, Dataset | None]:
+def prep_dataset(dataset_dict: DatasetDict, ruleset_config: RulesetConfig) -> tuple[Dataset, Dataset | None]:
     """
     Internal function to prepare the default HuggingFace dataset for the Connections environment.
     
@@ -34,10 +29,25 @@ def prep_dataset(dataset_dict: DatasetDict) -> tuple[Dataset, Dataset | None]:
         for words_list, theme in zip(example["group_words"], example["group_themes"]):
             categories.append({"group": theme, "members": words_list})
 
+        # Extract puzzle data explicitly
+        words = example["all_words"]
+        grid_size = example["grid_size"]  # Required field
+        num_groups = example["num_groups"]  # Required field
+        title = example.get("title")  # Optional
+        tags = example.get("tags", [])  # Optional, default to empty list
+
+        # Generate game start prompt using extracted data
+        game_start_prompt = generate_game_start_prompt(
+            words=words,
+            grid_size=grid_size,
+            num_groups=num_groups,
+            ruleset_config=ruleset_config,
+            title=title,
+            tags=tags
+        )
+
         return {
-            "question": connections_starting_prompt.format(
-                words=", ".join(example["all_words"])
-            ),
+            "question": game_start_prompt,
             "info": {"categories": categories},
         }
 

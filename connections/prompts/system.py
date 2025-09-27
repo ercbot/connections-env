@@ -1,4 +1,4 @@
-from .rulesets import RulesetConfig
+from ..rulesets import RulesetConfig
 
 
 BASE_GAME_DESCRIPTION = """\
@@ -36,7 +36,7 @@ After finding all categories (or running out of mistakes), you'll have a chance 
 
 GAME_EXAMPLES = """
 
-Categories Examples:
+Categories Examples (these examples show 4-word groups, but group sizes may vary):
 - Theme: FISH, Members: [BASS, TROUT, SALMON, TUNA]
 - Theme: FIRE ____, Members: [ANT, DRILL, ISLAND, OPAL]
 
@@ -56,6 +56,9 @@ STAG could be a male animal, but the "Available" group needs it to complete the 
 <tip>
 Categories will always have a more specific theme than "5-letter words", "names", "verbs", etc.
 </tip>
+<tip>
+Group sizes are consistent within each puzzle - all groups in a puzzle will have the same number of words.
+</tip>
 </tips>
 
 You don't have to guess the theme, just the words in the group. The order of the words in the category doesn't matter."""
@@ -70,22 +73,19 @@ How to play:
 {one_away_hint}
 2. Repeat until you have found all groups (you win) or make too many mistakes (you lose).{theme_revelation}{end_game_rules}{game_examples}
 
-Format your guess using XML tags as a list of words. Make sure to include all words for a complete group:
+Format your guess using XML tags as a list of words. The number of words per group will be specified when the game begins:
 
-<guess>[{word_placeholders}]</guess>"""
+<guess>[WORD1, WORD2, WORD3, ...]</guess>"""
 
 
-def generate_system_prompt(
-    ruleset_config: RulesetConfig, expected_group_size: int, total_categories: int
-) -> str:
+def generate_system_prompt(ruleset_config: RulesetConfig) -> str:
     """Generate system prompt based on ruleset configuration using templates."""
 
-    # Determine mistake rules
-    if ruleset_config.mistakes_start_counting_at >= total_categories:
-        mistake_rules = MISTAKE_RULES_ALWAYS_COUNT.format(
-            max_mistakes=ruleset_config.max_mistakes
-        )
-    else:
+    # Determine mistake rules (generic - specific counts will be in game start prompt)
+    mistake_rules = MISTAKE_RULES_ALWAYS_COUNT.format(
+        max_mistakes=ruleset_config.max_mistakes
+    )
+    if ruleset_config.mistakes_start_counting_at < 4:  # Assume typical 4-category puzzles
         mistake_rules = MISTAKE_RULES_COUNT_AT_END.format(
             mistakes_start_counting_at=ruleset_config.mistakes_start_counting_at,
             max_mistakes=ruleset_config.max_mistakes,
@@ -106,9 +106,6 @@ def generate_system_prompt(
         END_GAME_THEME_GUESSING if ruleset_config.end_game_theme_guessing else ""
     )
 
-    # Word placeholders
-    word_placeholders = ", ".join([f"WORD{i + 1}" for i in range(expected_group_size)])
-
     return BASE_SYSTEM_PROMPT.format(
         base_game_description=BASE_GAME_DESCRIPTION,
         mistake_rules=mistake_rules,
@@ -116,5 +113,4 @@ def generate_system_prompt(
         theme_revelation=theme_revelation,
         end_game_rules=end_game_rules,
         game_examples=GAME_EXAMPLES,
-        word_placeholders=word_placeholders,
     )

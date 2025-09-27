@@ -13,9 +13,12 @@ from typing import Dict
 @dataclass
 class RulesetConfig:
     """Configuration for different Connections game rulesets."""
+
     name: str
     max_mistakes: int
-    mistakes_start_counting_at: int  # Number of remaining categories when mistakes start counting
+    mistakes_start_counting_at: (
+        int  # Number of remaining categories when mistakes start counting
+    )
     show_one_away_hints: bool
     reveal_themes_immediately: bool
     end_game_theme_guessing: bool
@@ -28,7 +31,7 @@ RULESETS: Dict[str, RulesetConfig] = {
         mistakes_start_counting_at=4,  # Always count mistakes (from the beginning)
         show_one_away_hints=True,
         reveal_themes_immediately=True,
-        end_game_theme_guessing=False
+        end_game_theme_guessing=False,
     ),
     "puzzgrid": RulesetConfig(
         name="PuzzGrid/Connections Wall",
@@ -36,8 +39,8 @@ RULESETS: Dict[str, RulesetConfig] = {
         mistakes_start_counting_at=2,  # Only start counting when 2 categories left
         show_one_away_hints=False,
         reveal_themes_immediately=False,
-        end_game_theme_guessing=True
-    )
+        end_game_theme_guessing=True,
+    ),
 }
 
 
@@ -47,9 +50,3 @@ def get_ruleset_config(ruleset_name: str) -> RulesetConfig:
         available = ", ".join(RULESETS.keys())
         raise ValueError(f"Unknown ruleset: {ruleset_name}. Available: {available}")
     return RULESETS[ruleset_name]
-
-
-def generate_system_prompt(ruleset_config: RulesetConfig, expected_group_size: int, total_categories: int) -> str:
-    """Generate system prompt based on ruleset configuration."""
-    from .prompts import generate_system_prompt as _generate_system_prompt
-    return _generate_system_prompt(ruleset_config, expected_group_size, total_categories)
