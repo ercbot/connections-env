@@ -13,7 +13,7 @@ GRID_SIZE_INFO = "Grid size: {grid_size} ({total_categories} groups of {expected
 
 MISTAKES_ALWAYS_COUNT = "You have {max_mistakes} mistakes remaining."
 
-MISTAKES_COUNT_AT_END = "Mistakes will start counting when you have {mistakes_start_counting_at} or fewer categories remaining. You can then make {max_mistakes} mistakes."
+MISTAKES_COUNT_AT_END = "Mistakes will start counting when you have {mistakes_count_when_x_categories_remain} or fewer categories remaining. You can then make {max_mistakes} mistakes."
 
 
 def generate_game_start_prompt(
@@ -37,7 +37,8 @@ def generate_game_start_prompt(
     words_str = ", ".join(words)
 
     # Determine mistake display based on ruleset
-    if ruleset_config.mistakes_start_counting_at >= total_categories:
+    threshold = ruleset_config.mistakes_count_when_x_categories_remain
+    if threshold == "any":
         # Mistakes always count (NYT style)
         mistake_info = MISTAKES_ALWAYS_COUNT.format(
             max_mistakes=ruleset_config.max_mistakes
@@ -45,7 +46,7 @@ def generate_game_start_prompt(
     else:
         # Mistakes only count later (PuzzGrid style)
         mistake_info = MISTAKES_COUNT_AT_END.format(
-            mistakes_start_counting_at=ruleset_config.mistakes_start_counting_at,
+            mistakes_count_when_x_categories_remain=threshold,
             max_mistakes=ruleset_config.max_mistakes
         )
 

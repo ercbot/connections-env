@@ -1,5 +1,5 @@
 from datasets import Dataset, DatasetDict
-from .prompts.game_start import generate_game_start_prompt
+from .prompts import generate_game_start_prompt
 from .rulesets import RulesetConfig
 
 

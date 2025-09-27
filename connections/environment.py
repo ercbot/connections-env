@@ -84,10 +84,14 @@ class ConnectionsEnv(MultiTurnEnv):
         """
         Determine if mistakes should be counted based on ruleset configuration.
         """
+        threshold = self.ruleset_config.mistakes_count_when_x_categories_remain
+        if threshold == "any":
+            return True
+
         remaining_categories = len(
             state.get("info", {}).get("categories", [])
         ) - state.get("found_categories", 0)
-        return remaining_categories <= self.ruleset_config.mistakes_start_counting_at
+        return remaining_categories <= threshold
 
     async def env_response(
         self, messages: list[dict], state: dict, **kwargs: Any

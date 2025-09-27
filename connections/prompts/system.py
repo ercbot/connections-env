@@ -13,7 +13,7 @@ MISTAKE_RULES_ALWAYS_COUNT = """\
 
 MISTAKE_RULES_COUNT_AT_END = """\
 - Early in the game, incorrect guesses don't count as mistakes
-- When you have {mistakes_start_counting_at} or fewer categories remaining, incorrect guesses start counting as mistakes
+- When you have {mistakes_count_when_x_categories_remain} or fewer categories remaining, incorrect guesses start counting as mistakes
 - Make {max_mistakes} mistakes during the mistake-counting phase and you lose."""
 
 
@@ -82,12 +82,14 @@ def generate_system_prompt(ruleset_config: RulesetConfig) -> str:
     """Generate system prompt based on ruleset configuration using templates."""
 
     # Determine mistake rules (generic - specific counts will be in game start prompt)
-    mistake_rules = MISTAKE_RULES_ALWAYS_COUNT.format(
-        max_mistakes=ruleset_config.max_mistakes
-    )
-    if ruleset_config.mistakes_start_counting_at < 4:  # Assume typical 4-category puzzles
+    threshold = ruleset_config.mistakes_count_when_x_categories_remain
+    if threshold == "any":
+        mistake_rules = MISTAKE_RULES_ALWAYS_COUNT.format(
+            max_mistakes=ruleset_config.max_mistakes
+        )
+    else:
         mistake_rules = MISTAKE_RULES_COUNT_AT_END.format(
-            mistakes_start_counting_at=ruleset_config.mistakes_start_counting_at,
+            mistakes_count_when_x_categories_remain=threshold,
             max_mistakes=ruleset_config.max_mistakes,
         )
 
