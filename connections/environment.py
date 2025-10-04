@@ -1,15 +1,14 @@
 import logging
 from typing import Any
+
+from datasets import Dataset, load_dataset
 from verifiers import MultiTurnEnv
-from datasets import Dataset
 
 from .dataset import prep_dataset
 from .parser import ConnectionsParser
+from .prompts import generate_system_prompt
 from .rubric import ConnectionsRubric
 from .rulesets import get_ruleset_config
-from .prompts import generate_system_prompt
-
-from datasets import load_dataset
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +23,7 @@ class ConnectionsEnv(MultiTurnEnv):
         ruleset: str = "puzzgrid",
         dataset: Dataset | None = None,
         eval_dataset: Dataset | None = None,
-        max_turns: int = 10,
+        max_turns: int = 20,
         **kwargs,
     ):
         # Get ruleset configuration
@@ -58,8 +57,8 @@ class ConnectionsEnv(MultiTurnEnv):
         """
         Check if the game is completed.
         Game ends when:
-        1. All categories are found (win)
-        2. 4 mistakes are made (lose)
+        1. All categories are found (win) and theme guessing is complete (if enabled)
+        2. Max mistakes are made (lose)
         3. Max turns reached
         """
         # Check if we've reached max turns
@@ -75,8 +74,16 @@ class ConnectionsEnv(MultiTurnEnv):
 
         # Check if we've found all categories
         total_categories = len(state.get("info", {}).get("categories", []))
-        if state.get("found_categories", 0) >= total_categories:
-            return True
+        found_categories = state.get("found_categories", 0)
+
+        if found_categories >= total_categories:
+            # All categories found - check if theme guessing is required
+            if self.ruleset_config.end_game_theme_guessing:
+                # Theme guessing required - only complete when theme guesses are submitted
+                return "theme_guesses" in state
+            else:
+                # No theme guessing - game is complete
+                return True
 
         return False
 
@@ -92,6 +99,59 @@ class ConnectionsEnv(MultiTurnEnv):
             state.get("info", {}).get("categories", [])
         ) - state.get("found_categories", 0)
         return remaining_categories <= threshold
+
+    def _is_theme_match(
+        self, actual_theme: str, guessed_theme: str, linking_terms: list[str]
+    ) -> bool:
+        """
+        Check if a guessed theme matches the actual theme using linking terms for flexibility.
+
+        Args:
+            actual_theme: The correct theme from the dataset
+            guessed_theme: The user's guess
+            linking_terms: List of linking words/phrases that should also count as correct
+
+        Returns:
+            True if the guess matches the theme or any linking terms
+        """
+        if not guessed_theme or guessed_theme.lower().strip() == "no guess":
+            return False
+
+        # Clean up strings for comparison
+        actual_clean = actual_theme.lower().strip()
+        guessed_clean = guessed_theme.lower().strip()
+
+        # Exact match
+        if actual_clean == guessed_clean:
+            return True
+
+        # Check if guess matches any linking terms
+        for term in linking_terms:
+            term_clean = term.lower().strip()
+
+            # Exact match with linking term
+            if guessed_clean == term_clean:
+                return True
+
+            # Check if guessed theme contains the linking term (or vice versa)
+            if term_clean in guessed_clean or guessed_clean in term_clean:
+                return True
+
+        # Check if any word from the guess appears in the actual theme or linking terms
+        guessed_words = set(guessed_clean.split())
+        actual_words = set(actual_clean.split())
+
+        # Check for word overlap with actual theme
+        if guessed_words & actual_words:
+            return True
+
+        # Check for word overlap with linking terms
+        for term in linking_terms:
+            term_words = set(term.lower().split())
+            if guessed_words & term_words:
+                return True
+
+        return False
 
     async def env_response(
         self, messages: list[dict], state: dict, **kwargs: Any
@@ -115,17 +175,42 @@ class ConnectionsEnv(MultiTurnEnv):
 
         # Get the AI's last response
         last_message = messages[-1]
-        if last_message.get("role") != "assistant":
-            return [
-                {"role": "user", "content": "Please make a guess of 4 words."}
-            ], state
+
+        # Determine which phase of the game we're in
+        total_categories = len(state.get("info", {}).get("categories", []))
+        mistakes = state.get("mistakes", 0)
+        found_categories = state.get("found_categories", 0)
+
+        # Check if we should continue with word guessing
+        if (
+            mistakes < self.ruleset_config.max_mistakes
+            and found_categories < total_categories
+        ):
+            # Normal word guessing phase
+            response, state = await self.handle_word_guess_phase(last_message, state)
+
+        # Word guessing is complete, check if we should do theme guessing
+        if (
+            found_categories < total_categories
+            and self.ruleset_config.end_game_theme_guessing
+        ):
+            # Theme guessing phase
+            response, state = await self.handle_theme_guess_phase(last_message, state)
+
+        if response is not None:
+            return response, state
+        else:
+            raise ValueError("Invalid game state")
+
+    async def handle_word_guess_phase(
+        self, last_message: dict, state: dict
+    ) -> tuple[list[dict], dict]:
+        """Handle the word guessing phase of the game."""
 
         # Parse the AI's guess
         try:
             guessed_words = self.parser.parse_answer_as_list(last_message["content"])
         except Exception as e:
-            logger.error(f"Failed to parse guess: {e}")
-            logger.error(f"Content: {last_message['content']}")
             # If parsing fails, count as a mistake (if mistakes are being counted)
             if self._should_count_mistakes(state):
                 state["mistakes"] += 1
@@ -134,10 +219,16 @@ class ConnectionsEnv(MultiTurnEnv):
                 if self._should_count_mistakes(state)
                 else ""
             )
+            # Get expected group size from the first category (assume all same size)
+            expected_group_size = (
+                len(state["info"]["categories"][0]["members"])
+                if state["info"]["categories"]
+                else 4
+            )
             return [
                 {
                     "role": "user",
-                    "content": f"Invalid format. Please guess exactly 4 words separated by commas.{mistake_display}",
+                    "content": f"Error when trying to parse your guess: {str(e)}{mistake_display}",
                 }
             ], state
 
@@ -222,7 +313,8 @@ class ConnectionsEnv(MultiTurnEnv):
                 response = f"Correct! Category {state['found_categories']}/{total_categories} found. Theme will be revealed at the end."
 
             if state["found_categories"] >= total_categories:
-                response += "\n🎉 Congratulations! You've found all categories!"
+                # Round is over - return None to indicate no AI response needed
+                return None, state
             else:
                 remaining_words = [
                     word
@@ -254,6 +346,136 @@ class ConnectionsEnv(MultiTurnEnv):
                 if self._should_count_mistakes(state)
                 else ""
             )
-            response = f"{one_away_msg}Incorrect guess.{mistake_display}"
+            response = f"{one_away_msg}Incorrect guess, try again.{mistake_display}"
 
         return [{"role": "user", "content": response}], state
+
+    async def handle_theme_guess_phase(
+        self, last_message: dict, state: dict
+    ) -> tuple[list[dict], dict]:
+        """Handle the theme guessing phase of the game (PuzzGrid style)."""
+
+        # Initialize theme guessing state if this is the first theme guess
+        if "theme_guessing_started" not in state:
+            state["theme_guessing_started"] = True
+            state["theme_guesses"] = {}
+
+            # Create dynamic XML parser for theme guessing
+            total_categories = len(state["info"]["categories"])
+            theme_fields = [
+                f"category_{i}_guess" for i in range(1, total_categories + 1)
+            ]
+
+            from verifiers import XMLParser
+
+            # answer_field doesn't matter since we'll use parse() not parse_answer()
+            state["theme_parser"] = XMLParser(
+                fields=theme_fields, answer_field=theme_fields[0]
+            )
+
+            # Present all found categories without themes
+            categories_display = []
+            xml_format_display = []
+            for i, category in enumerate(state["info"]["categories"], 1):
+                members_str = ", ".join(category["members"])
+                categories_display.append(f"Category {i}: [{members_str}]")
+                xml_format_display.append(
+                    f"<category_{i}_guess>your theme guess</category_{i}_guess>"
+                )
+
+            categories_text = "\n".join(categories_display)
+            xml_format_text = "\n".join(xml_format_display)
+
+            return [
+                {
+                    "role": "user",
+                    "content": f"🎉 Word guessing complete! Now guess the themes for bonus points:\n\n{categories_text}\n\nPlease guess the theme for each category using this format:\n\n{xml_format_text}",
+                }
+            ], state
+
+        # Parse theme guesses using the dynamic XML parser
+        try:
+            theme_parser = state.get("theme_parser")
+            if not theme_parser:
+                logger.error("Theme parser not found in state")
+                return [
+                    {"role": "user", "content": "Error: Theme parsing not initialized."}
+                ], state
+
+            # Parse the XML content
+            parsed = theme_parser.parse(last_message["content"])
+            guesses = {}
+
+            # Extract all category guesses from the parsed namespace
+            total_categories = len(state["info"]["categories"])
+            for i in range(1, total_categories + 1):
+                field_name = f"category_{i}_guess"
+                theme_guess = getattr(parsed, field_name, None)
+                if theme_guess and theme_guess.strip():
+                    guesses[i] = theme_guess.strip()
+
+            if not guesses:
+                # Show the expected format again
+                xml_format_display = []
+                for i in range(1, total_categories + 1):
+                    xml_format_display.append(
+                        f"<category_{i}_guess>your theme guess</category_{i}_guess>"
+                    )
+                xml_format_text = "\n".join(xml_format_display)
+
+                return [
+                    {
+                        "role": "user",
+                        "content": f"Please format your theme guesses using the XML format:\n\n{xml_format_text}",
+                    }
+                ], state
+
+        except Exception:
+            # Show the expected format again
+            total_categories = len(state["info"]["categories"])
+            xml_format_display = []
+            for i in range(1, total_categories + 1):
+                xml_format_display.append(
+                    f"<category_{i}_guess>your theme guess</category_{i}_guess>"
+                )
+            xml_format_text = "\n".join(xml_format_display)
+
+            return [
+                {
+                    "role": "user",
+                    "content": f"Please format your theme guesses using the XML format:\n\n{xml_format_text}",
+                }
+            ], state
+
+        # Store guesses in state for scoring
+        state["theme_guesses"] = guesses
+
+        # Calculate theme guess accuracy for display
+        correct_themes = 0
+        total_categories = len(state["info"]["categories"])
+
+        theme_results = []
+        for i, category in enumerate(state["info"]["categories"], 1):
+            actual_theme = category["group"]
+            guessed_theme = guesses.get(i, "No guess")
+
+            # Enhanced theme matching with linking terms
+            is_correct = self._is_theme_match(
+                actual_theme, guessed_theme, category.get("linking_terms", [])
+            )
+            if is_correct:
+                correct_themes += 1
+
+            status = "✓" if is_correct else "✗"
+            theme_results.append(
+                f"Category {i}: {actual_theme} {status} (You guessed: {guessed_theme})"
+            )
+
+        results_text = "\n".join(theme_results)
+
+        return [
+            {
+                "role": "user",
+                "content": f"Theme guessing complete!\n\n{results_text}\n\nYou got {correct_themes}/{total_categories} themes correct! Game finished.",
+            }
+        ], state

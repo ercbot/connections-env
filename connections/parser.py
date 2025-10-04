@@ -1,5 +1,6 @@
-from verifiers import XMLParser
+import re
 
+from verifiers import XMLParser
 
 connections_round_prompt_template = """\
 The word grid currently looks like so:
@@ -11,12 +12,19 @@ You have {number_of_mistakes} mistakes left.
 
 
 class ConnectionsParser(XMLParser):
+    """Special implementation of the XMLParser that can parse the answer as a list of words."""
+
     def __init__(self, **kwargs):
         fields = ["guess"]
         answer_field = "guess"
         super().__init__(fields=fields, answer_field=answer_field, **kwargs)
 
     def parse_answer_as_list(self, completion: str) -> list[str]:
+        # Check for multiple guess tags first
+        guess_matches = re.findall(r'<guess>.*?</guess>', completion, re.DOTALL | re.IGNORECASE)
+        if len(guess_matches) > 1:
+            raise ValueError(f"Multiple guess tags found ({len(guess_matches)}). Please submit only one guess.")
+
         response = self.parse_answer(completion)
         if response is None:
             return []

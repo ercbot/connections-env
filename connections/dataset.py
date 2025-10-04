@@ -1,4 +1,5 @@
 from datasets import Dataset, DatasetDict
+
 from .prompts import generate_game_start_prompt
 from .rulesets import RulesetConfig
 
@@ -24,10 +25,25 @@ def prep_dataset(dataset_dict: DatasetDict, ruleset_config: RulesetConfig) -> tu
     """
 
     def format_dataset(example):
-        # Convert group_words and group_themes to categories format
+        # Convert group_words, group_themes, and group_linking_terms to categories format
         categories = []
-        for words_list, theme in zip(example["group_words"], example["group_themes"]):
-            categories.append({"group": theme, "members": words_list})
+        group_linking_terms = example.get("group_linking_terms", [])
+
+        for i, (words_list, theme) in enumerate(zip(example["group_words"], example["group_themes"])):
+            # Extract linking terms for this category
+            linking_terms = []
+            if i < len(group_linking_terms):
+                # Split linking terms by spaces/commas and clean them
+                raw_terms = group_linking_terms[i]
+                if isinstance(raw_terms, str):
+                    # Handle both comma and space separation
+                    linking_terms = [term.strip() for term in raw_terms.replace(',', ' ').split() if term.strip()]
+
+            categories.append({
+                "group": theme,
+                "members": words_list,
+                "linking_terms": linking_terms
+            })
 
         # Extract puzzle data explicitly
         words = example["all_words"]
