@@ -1,8 +1,9 @@
 import logging
-from typing import Any
+from typing import Tuple
 
 from datasets import Dataset, load_dataset
 from verifiers import MultiTurnEnv
+from verifiers.types import Messages, State
 
 from .dataset import prep_dataset
 from .parser import ConnectionsParser
@@ -52,7 +53,7 @@ class ConnectionsEnv(MultiTurnEnv):
         )
 
     async def is_completed(
-        self, messages: list[dict], state: dict, **kwargs: Any
+        self, messages: Messages, state: State
     ) -> bool:
         """
         Check if the game is completed.
@@ -67,7 +68,6 @@ class ConnectionsEnv(MultiTurnEnv):
             >= self.max_turns
         ):
             return True
-
         # Check if we've made max mistakes
         if state.get("mistakes", 0) >= self.ruleset_config.max_mistakes:
             return True
@@ -75,19 +75,23 @@ class ConnectionsEnv(MultiTurnEnv):
         # Check if we've found all categories
         total_categories = len(state.get("info", {}).get("categories", []))
         found_categories = state.get("found_categories", 0)
+        # And check that we don't need to guess the theme
+        is_theme_guessing_enabled = self.ruleset_config.end_game_theme_guessing
 
-        if found_categories >= total_categories:
-            # All categories found - check if theme guessing is required
-            if self.ruleset_config.end_game_theme_guessing:
-                # Theme guessing required - only complete when theme guesses are submitted
-                return "theme_guesses" in state
-            else:
-                # No theme guessing - game is complete
-                return True
+        if found_categories >= total_categories and not is_theme_guessing_enabled:
+            # Without theme guessing - game is complete
+            return True
+
+        # Check if the the theme has been guessed
+        theme_guesses = state.get("theme_guesses", {})
+
+        if is_theme_guessing_enabled and theme_guesses:
+            # Check if state is NOT an empty dict
+            return True
 
         return False
 
-    def _should_count_mistakes(self, state: dict) -> bool:
+    def _should_count_mistakes(self, state: State) -> bool:
         """
         Determine if mistakes should be counted based on ruleset configuration.
         """
@@ -154,10 +158,13 @@ class ConnectionsEnv(MultiTurnEnv):
         return False
 
     async def env_response(
-        self, messages: list[dict], state: dict, **kwargs: Any
-    ) -> tuple[list[dict], dict]:
+        self, messages: Messages, state: State
+    ) -> Tuple[Messages, State]:
         """
-        Generate environment response based on the AI's guess.
+        Game logic, updates state and returns environment response to the AI based on the rules.
+
+        1. Update game state based players last message
+        2. Generate response based on new state
         """
         # Initialize state if not present
         if "mistakes" not in state:
@@ -175,200 +182,46 @@ class ConnectionsEnv(MultiTurnEnv):
 
         # Get the AI's last response
         last_message = messages[-1]
+        if last_message["role"] != "assistant":
+            return [], state
 
-        # Determine which phase of the game we're in
-        total_categories = len(state.get("info", {}).get("categories", []))
+        # ============================================================
+        # PART 1: UPDATE STATE
+        # ============================================================
+        state = await self._update_state(last_message["content"], state)
+
+        # ============================================================
+        # PART 2: GENERATE RESPONSE
+        # ============================================================
+        total_categories = len(state["info"]["categories"])
         mistakes = state.get("mistakes", 0)
         found_categories = state.get("found_categories", 0)
 
-        # Check if we should continue with word guessing
+        # Still in word guessing phase
         if (
             mistakes < self.ruleset_config.max_mistakes
             and found_categories < total_categories
         ):
-            # Normal word guessing phase
-            response, state = await self.handle_word_guess_phase(last_message, state)
+            response = self._generate_word_phase_response(state)
+            return [{"role": "user", "content": response}], state
 
-        # Word guessing is complete, check if we should do theme guessing
-        if (
-            found_categories < total_categories
+        # Transition to theme guessing phase
+        elif (
+            found_categories >= total_categories
             and self.ruleset_config.end_game_theme_guessing
+            and "theme_guessing_started" not in state
         ):
-            # Theme guessing phase
-            response, state = await self.handle_theme_guess_phase(last_message, state)
-
-        if response is not None:
-            return response, state
-        else:
-            raise ValueError("Invalid game state")
-
-    async def handle_word_guess_phase(
-        self, last_message: dict, state: dict
-    ) -> tuple[list[dict], dict]:
-        """Handle the word guessing phase of the game."""
-
-        # Parse the AI's guess
-        try:
-            guessed_words = self.parser.parse_answer_as_list(last_message["content"])
-        except Exception as e:
-            # If parsing fails, count as a mistake (if mistakes are being counted)
-            if self._should_count_mistakes(state):
-                state["mistakes"] += 1
-            mistake_display = (
-                f" Mistakes: {state['mistakes']}/{self.ruleset_config.max_mistakes}"
-                if self._should_count_mistakes(state)
-                else ""
-            )
-            # Get expected group size from the first category (assume all same size)
-            expected_group_size = (
-                len(state["info"]["categories"][0]["members"])
-                if state["info"]["categories"]
-                else 4
-            )
-            return [
-                {
-                    "role": "user",
-                    "content": f"Error when trying to parse your guess: {str(e)}{mistake_display}",
-                }
-            ], state
-
-        # Get expected group size from the first category (assume all same size)
-        expected_group_size = (
-            len(state["info"]["categories"][0]["members"])
-            if state["info"]["categories"]
-            else 4
-        )
-
-        # Validate the guess
-        if len(guessed_words) != expected_group_size:
-            if self._should_count_mistakes(state):
-                state["mistakes"] += 1
-            mistake_display = (
-                f" Mistakes: {state['mistakes']}/{self.ruleset_config.max_mistakes}"
-                if self._should_count_mistakes(state)
-                else ""
-            )
-            return [
-                {
-                    "role": "user",
-                    "content": f"Please guess exactly {expected_group_size} words. You guessed {len(guessed_words)}.{mistake_display}",
-                }
-            ], state
-
-        # Check if all guessed words are valid
-        invalid_words = [
-            word for word in guessed_words if word not in state["all_words"]
-        ]
-        if invalid_words:
-            if self._should_count_mistakes(state):
-                state["mistakes"] += 1
-            mistake_display = (
-                f" Mistakes: {state['mistakes']}/{self.ruleset_config.max_mistakes}"
-                if self._should_count_mistakes(state)
-                else ""
-            )
-            return [
-                {
-                    "role": "user",
-                    "content": f"Invalid words: {', '.join(invalid_words)}. These words are not in the game.{mistake_display}",
-                }
-            ], state
-
-        # Check if words are already found
-        already_found = [word for word in guessed_words if word in state["found_words"]]
-        if already_found:
-            if self._should_count_mistakes(state):
-                state["mistakes"] += 1
-            mistake_display = (
-                f" Mistakes: {state['mistakes']}/{self.ruleset_config.max_mistakes}"
-                if self._should_count_mistakes(state)
-                else ""
-            )
-            return [
-                {
-                    "role": "user",
-                    "content": f"Words already found: {', '.join(already_found)}.{mistake_display}",
-                }
-            ], state
-
-        # Check if the guess matches a category
-        correct_category = None
-        for category in state["info"]["categories"]:
-            category_words = set([word.lower() for word in category["members"]])
-            if set(guessed_words) == category_words:
-                correct_category = category
-                break
-
-        if correct_category:
-            # Correct guess!
-            state["found_categories"] += 1
-            state["found_words"].update(guessed_words)
-
-            total_categories = len(state["info"]["categories"])
-
-            # Build response based on theme revelation setting
-            if self.ruleset_config.reveal_themes_immediately:
-                response = f"Correct! Category {state['found_categories']}/{total_categories} found: {correct_category['group']} - {', '.join(correct_category['members'])}"
-            else:
-                response = f"Correct! Category {state['found_categories']}/{total_categories} found. Theme will be revealed at the end."
-
-            if state["found_categories"] >= total_categories:
-                # Round is over - return None to indicate no AI response needed
-                return None, state
-            else:
-                remaining_words = [
-                    word
-                    for word in state["all_words"]
-                    if word not in state["found_words"]
-                ]
-                response += f"\nRemaining words: {', '.join(remaining_words)}"
-
-        else:
-            # Incorrect guess
-            if self._should_count_mistakes(state):
-                state["mistakes"] += 1
-
-            # Check for "One Away" (3 correct words) if ruleset allows
-            one_away_msg = ""
-            if self.ruleset_config.show_one_away_hints:
-                max_correct = 0
-                for category in state["info"]["categories"]:
-                    category_words = set([word.lower() for word in category["members"]])
-                    correct_count = len(set(guessed_words) & category_words)
-                    if correct_count > max_correct:
-                        max_correct = correct_count
-
-                if max_correct == expected_group_size - 1:  # One away (e.g., 3/4)
-                    one_away_msg = "One away! "
-
-            mistake_display = (
-                f" Mistakes: {state['mistakes']}/{self.ruleset_config.max_mistakes}"
-                if self._should_count_mistakes(state)
-                else ""
-            )
-            response = f"{one_away_msg}Incorrect guess, try again.{mistake_display}"
-
-        return [{"role": "user", "content": response}], state
-
-    async def handle_theme_guess_phase(
-        self, last_message: dict, state: dict
-    ) -> tuple[list[dict], dict]:
-        """Handle the theme guessing phase of the game (PuzzGrid style)."""
-
-        # Initialize theme guessing state if this is the first theme guess
-        if "theme_guessing_started" not in state:
+            # Initialize theme guessing
             state["theme_guessing_started"] = True
             state["theme_guesses"] = {}
 
             # Create dynamic XML parser for theme guessing
-            total_categories = len(state["info"]["categories"])
             theme_fields = [
                 f"category_{i}_guess" for i in range(1, total_categories + 1)
             ]
 
             from verifiers import XMLParser
 
-            # answer_field doesn't matter since we'll use parse() not parse_answer()
             state["theme_parser"] = XMLParser(
                 fields=theme_fields, answer_field=theme_fields[0]
             )
@@ -393,45 +246,192 @@ class ConnectionsEnv(MultiTurnEnv):
                 }
             ], state
 
-        # Parse theme guesses using the dynamic XML parser
-        try:
-            theme_parser = state.get("theme_parser")
-            if not theme_parser:
-                logger.error("Theme parser not found in state")
-                return [
-                    {"role": "user", "content": "Error: Theme parsing not initialized."}
-                ], state
+        # In theme guessing phase (already started)
+        elif "theme_guessing_started" in state and state.get("theme_guesses"):
+            response = self._generate_theme_results_response(state)
+            return [{"role": "user", "content": response}], state
 
-            # Parse the XML content
-            parsed = theme_parser.parse(last_message["content"])
-            guesses = {}
+        # Game over - no more responses needed (return empty messages)
+        else:
+            return [], state
 
-            # Extract all category guesses from the parsed namespace
-            total_categories = len(state["info"]["categories"])
-            for i in range(1, total_categories + 1):
-                field_name = f"category_{i}_guess"
-                theme_guess = getattr(parsed, field_name, None)
-                if theme_guess and theme_guess.strip():
-                    guesses[i] = theme_guess.strip()
+    async def _update_state(self, last_message_content: str, state: State) -> State:
+        """
+        Update state based on player's last message. All logic inline.
+        """
+        total_categories = len(state["info"]["categories"])
 
-            if not guesses:
-                # Show the expected format again
-                xml_format_display = []
+        # Determine if we're in word phase or theme phase
+        currently_in_word_phase = (
+            state.get("mistakes", 0) < self.ruleset_config.max_mistakes
+            and state.get("found_categories", 0) < total_categories
+        )
+        currently_in_theme_phase = "theme_guessing_started" in state
+
+        # ============================================================
+        # WORD GUESSING PHASE
+        # ============================================================
+        if currently_in_word_phase:
+            # Parse the AI's guess
+            try:
+                guessed_words = self.parser.parse_answer_as_list(last_message_content)
+            except Exception as e:
+                # If parsing fails, count as a mistake
+                if self._should_count_mistakes(state):
+                    state["mistakes"] += 1
+                state["last_error"] = f"Error when trying to parse your guess: {str(e)}"
+                return state
+
+            # Get expected group size from the first category
+            expected_group_size = (
+                len(state["info"]["categories"][0]["members"])
+                if state["info"]["categories"]
+                else 4
+            )
+
+            # Validate the guess - check count
+            if len(guessed_words) != expected_group_size:
+                if self._should_count_mistakes(state):
+                    state["mistakes"] += 1
+                state["last_error"] = f"Please guess exactly {expected_group_size} words. You guessed {len(guessed_words)}."
+                return state
+
+            # Check if all guessed words are valid
+            invalid_words = [
+                word for word in guessed_words if word not in state["all_words"]
+            ]
+            if invalid_words:
+                if self._should_count_mistakes(state):
+                    state["mistakes"] += 1
+                state["last_error"] = f"Invalid words: {', '.join(invalid_words)}. These words are not in the game."
+                return state
+
+            # Check if words are already found
+            already_found = [word for word in guessed_words if word in state["found_words"]]
+            if already_found:
+                if self._should_count_mistakes(state):
+                    state["mistakes"] += 1
+                state["last_error"] = f"Words already found: {', '.join(already_found)}."
+                return state
+
+            # Check if the guess matches a category
+            correct_category = None
+            for category in state["info"]["categories"]:
+                category_words = set([word.lower() for word in category["members"]])
+                if set(guessed_words) == category_words:
+                    correct_category = category
+                    break
+
+            if correct_category:
+                # Correct guess!
+                state["found_categories"] += 1
+                state["found_words"].update(guessed_words)
+                state["last_correct_category"] = correct_category
+                state["last_error"] = None
+            else:
+                # Incorrect guess
+                if self._should_count_mistakes(state):
+                    state["mistakes"] += 1
+
+                # Check for "One Away" if ruleset allows
+                state["last_one_away"] = False
+                if self.ruleset_config.show_one_away_hints:
+                    max_correct = 0
+                    for category in state["info"]["categories"]:
+                        category_words = set([word.lower() for word in category["members"]])
+                        correct_count = len(set(guessed_words) & category_words)
+                        if correct_count > max_correct:
+                            max_correct = correct_count
+
+                    if max_correct == expected_group_size - 1:
+                        state["last_one_away"] = True
+
+                state["last_correct_category"] = None
+                state["last_error"] = None
+
+        # ============================================================
+        # THEME GUESSING PHASE
+        # ============================================================
+        elif currently_in_theme_phase:
+            # Parse theme guesses using the dynamic XML parser
+            try:
+                theme_parser = state.get("theme_parser")
+                if not theme_parser:
+                    logger.error("Theme parser not found in state")
+                    state["theme_parse_error"] = True
+                    return state
+
+                # Parse the XML content
+                parsed = theme_parser.parse(last_message_content)
+                guesses = {}
+
+                # Extract all category guesses from the parsed namespace
                 for i in range(1, total_categories + 1):
-                    xml_format_display.append(
-                        f"<category_{i}_guess>your theme guess</category_{i}_guess>"
-                    )
-                xml_format_text = "\n".join(xml_format_display)
+                    field_name = f"category_{i}_guess"
+                    theme_guess = getattr(parsed, field_name, None)
+                    if theme_guess and theme_guess.strip():
+                        guesses[i] = theme_guess.strip()
 
-                return [
-                    {
-                        "role": "user",
-                        "content": f"Please format your theme guesses using the XML format:\n\n{xml_format_text}",
-                    }
-                ], state
+                if not guesses:
+                    state["theme_parse_error"] = True
+                    return state
 
-        except Exception:
-            # Show the expected format again
+                # Store guesses in state for scoring
+                state["theme_guesses"] = guesses
+                state["theme_parse_error"] = False
+
+            except Exception:
+                state["theme_parse_error"] = True
+
+        return state
+
+    def _generate_word_phase_response(self, state: State) -> str:
+        """
+        Generate response text for word guessing phase based on current state.
+        """
+        total_categories = len(state["info"]["categories"])
+
+        # Format mistake display if needed
+        mistake_display = (
+            f" Mistakes: {state['mistakes']}/{self.ruleset_config.max_mistakes}"
+            if self._should_count_mistakes(state)
+            else ""
+        )
+
+        # If there was an error in the last guess
+        if state.get("last_error"):
+            return f"{state['last_error']}{mistake_display}"
+
+        # If the last guess was correct
+        if state.get("last_correct_category"):
+            correct_category = state["last_correct_category"]
+
+            if self.ruleset_config.reveal_themes_immediately:
+                response = f"Correct! Category {state['found_categories']}/{total_categories} found: {correct_category['group']} - {', '.join(correct_category['members'])}"
+            else:
+                response = f"Correct! Category {state['found_categories']}/{total_categories} found. Theme will be revealed at the end."
+
+            # Add remaining words if not all categories found
+            if state["found_categories"] < total_categories:
+                remaining_words = [
+                    word
+                    for word in state["all_words"]
+                    if word not in state["found_words"]
+                ]
+                response += f"\nRemaining words: {', '.join(remaining_words)}"
+
+            return response
+
+        # If the last guess was incorrect
+        one_away_msg = "One away! " if state.get("last_one_away") else ""
+        return f"{one_away_msg}Incorrect guess, try again.{mistake_display}"
+
+    def _generate_theme_results_response(self, state: State) -> str:
+        """
+        Generate response text for theme guessing results.
+        """
+        # If there was a parsing error, show format instructions
+        if state.get("theme_parse_error"):
             total_categories = len(state["info"]["categories"])
             xml_format_display = []
             for i in range(1, total_categories + 1):
@@ -439,20 +439,12 @@ class ConnectionsEnv(MultiTurnEnv):
                     f"<category_{i}_guess>your theme guess</category_{i}_guess>"
                 )
             xml_format_text = "\n".join(xml_format_display)
-
-            return [
-                {
-                    "role": "user",
-                    "content": f"Please format your theme guesses using the XML format:\n\n{xml_format_text}",
-                }
-            ], state
-
-        # Store guesses in state for scoring
-        state["theme_guesses"] = guesses
+            return f"Please format your theme guesses using the XML format:\n\n{xml_format_text}"
 
         # Calculate theme guess accuracy for display
         correct_themes = 0
         total_categories = len(state["info"]["categories"])
+        guesses = state.get("theme_guesses", {})
 
         theme_results = []
         for i, category in enumerate(state["info"]["categories"], 1):
@@ -472,10 +464,4 @@ class ConnectionsEnv(MultiTurnEnv):
             )
 
         results_text = "\n".join(theme_results)
-
-        return [
-            {
-                "role": "user",
-                "content": f"Theme guessing complete!\n\n{results_text}\n\nYou got {correct_themes}/{total_categories} themes correct! Game finished.",
-            }
-        ], state
+        return f"Theme guessing complete!\n\n{results_text}\n\nYou got {correct_themes}/{total_categories} themes correct! Game finished."
