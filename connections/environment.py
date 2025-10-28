@@ -10,6 +10,7 @@ from .parser import ConnectionsParser
 from .prompts import generate_system_prompt
 from .rubric import ConnectionsRubric
 from .rulesets import get_ruleset_config
+from .theme_matching import is_theme_match
 
 logger = logging.getLogger(__name__)
 
@@ -103,59 +104,6 @@ class ConnectionsEnv(MultiTurnEnv):
             state.get("info", {}).get("categories", [])
         ) - state.get("found_categories", 0)
         return remaining_categories <= threshold
-
-    def _is_theme_match(
-        self, actual_theme: str, guessed_theme: str, linking_terms: list[str]
-    ) -> bool:
-        """
-        Check if a guessed theme matches the actual theme using linking terms for flexibility.
-
-        Args:
-            actual_theme: The correct theme from the dataset
-            guessed_theme: The user's guess
-            linking_terms: List of linking words/phrases that should also count as correct
-
-        Returns:
-            True if the guess matches the theme or any linking terms
-        """
-        if not guessed_theme or guessed_theme.lower().strip() == "no guess":
-            return False
-
-        # Clean up strings for comparison
-        actual_clean = actual_theme.lower().strip()
-        guessed_clean = guessed_theme.lower().strip()
-
-        # Exact match
-        if actual_clean == guessed_clean:
-            return True
-
-        # Check if guess matches any linking terms
-        for term in linking_terms:
-            term_clean = term.lower().strip()
-
-            # Exact match with linking term
-            if guessed_clean == term_clean:
-                return True
-
-            # Check if guessed theme contains the linking term (or vice versa)
-            if term_clean in guessed_clean or guessed_clean in term_clean:
-                return True
-
-        # Check if any word from the guess appears in the actual theme or linking terms
-        guessed_words = set(guessed_clean.split())
-        actual_words = set(actual_clean.split())
-
-        # Check for word overlap with actual theme
-        if guessed_words & actual_words:
-            return True
-
-        # Check for word overlap with linking terms
-        for term in linking_terms:
-            term_words = set(term.lower().split())
-            if guessed_words & term_words:
-                return True
-
-        return False
 
     async def env_response(
         self, messages: Messages, state: State
@@ -452,7 +400,7 @@ class ConnectionsEnv(MultiTurnEnv):
             guessed_theme = guesses.get(i, "No guess")
 
             # Enhanced theme matching with linking terms
-            is_correct = self._is_theme_match(
+            is_correct = is_theme_match(
                 actual_theme, guessed_theme, category.get("linking_terms", [])
             )
             if is_correct:

@@ -7,14 +7,13 @@ You can also make custom rulesets from the avaible elements.
 """
 
 from dataclasses import dataclass
-from typing import Dict, Union, Literal
+from typing import Dict, Literal, Union
 
 
 @dataclass
 class RulesetConfig:
     """Configuration for different Connections game rulesets."""
 
-    name: str
     max_mistakes: int
     mistakes_count_when_x_categories_remain: Union[int, Literal["any"]]  # Number of remaining categories when mistakes start counting, or "any" for always
     show_one_away_hints: bool
@@ -24,7 +23,6 @@ class RulesetConfig:
 
 RULESETS: Dict[str, RulesetConfig] = {
     "nyt": RulesetConfig(
-        name="NYT Connections",
         max_mistakes=4,
         mistakes_count_when_x_categories_remain="any",  # Always count mistakes (from the beginning)
         show_one_away_hints=True,
@@ -32,7 +30,6 @@ RULESETS: Dict[str, RulesetConfig] = {
         end_game_theme_guessing=False,
     ),
     "puzzgrid": RulesetConfig(
-        name="PuzzGrid/Connections Wall",
         max_mistakes=3,
         mistakes_count_when_x_categories_remain=2,  # Only start counting when 2 categories left
         show_one_away_hints=False,

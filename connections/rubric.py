@@ -1,21 +1,29 @@
 from verifiers import Rubric
+
 from .rulesets import RulesetConfig
+from .theme_matching import is_theme_match
 
 
 class ConnectionsRubric(Rubric):
     def __init__(self, parser, ruleset_config: RulesetConfig, **kwargs):
         self.ruleset_config = ruleset_config
         super().__init__(parser=parser, **kwargs)
+        # Word Grouping Reward Funcs
         # Validity Reward Funcs
-        # - Rewards for correctly following the rules of the game
         self.add_reward_func(self.guessed_correct_number_of_words, 0.25)
         self.add_reward_func(self.proportional_valid_words, 0.25)
         self.add_reward_func(self.all_words_valid, 0.25)
         # Correctness Reward Funcs
-        # - Rewards for playing the game well
         self.add_reward_func(self.almost_found_categories, 0.5)
         self.add_reward_func(self.found_categories, 4.0)
         self.add_reward_func(self.efficiency_bonus)
+        if not self.ruleset_config.end_game_theme_guessing:
+            return
+        # Theme Guessing Reward Funcs
+        self.add_reward_func(self.attempted_theme_guessing, 0.25)
+        self.add_reward_func(self.guessed_correct_number_of_themes, 0.5)
+        self.add_reward_func(self.found_themes, 4.0)
+        self.add_reward_func(self.found_all_themes_bonus, 1.0)
 
     def guessed_correct_number_of_words(self, completion, answer, state, info) -> float:
         """
@@ -163,3 +171,84 @@ class ConnectionsRubric(Rubric):
         # Perfect efficiency is 1 guess per category
         efficiency = categories / guesses
         return min(efficiency, 1.0)  # Cap at 1.0 for perfect efficiency
+
+    def attempted_theme_guessing(self, completion, answer, state, info) -> float:
+        """
+        Returns 1.0 if the AI attempted to guess any themes, 0.0 otherwise.
+        Small reward to encourage theme guessing participation.
+        """
+        theme_guesses = state.get("theme_guesses", {})
+        # Check if any theme guess was made (non-empty dict)
+        return 1.0 if theme_guesses else 0.0
+
+    def guessed_correct_number_of_themes(
+        self, completion, answer, state, info
+    ) -> float:
+        """
+        Returns 1.0 if the correct number of themes were guessed, 0.0 otherwise.
+        """
+        theme_guesses = state.get("theme_guesses", {})
+        if not theme_guesses:
+            return 0.0
+
+        total_categories = len(info["categories"])
+        num_guesses = len(theme_guesses)
+
+        return 1.0 if num_guesses == total_categories else 0.0
+
+    def found_themes(self, completion, answer, state, info) -> float:
+        """
+        Returns the proportion of themes correctly guessed (0.0-1.0).
+        Awards points based on # themes found / total themes.
+        """
+        theme_guesses = state.get("theme_guesses", {})
+        if not theme_guesses:
+            return 0.0
+
+        total_categories = len(info["categories"])
+        if total_categories == 0:
+            return 0.0
+
+        # Count correct theme guesses
+        correct_themes = 0
+        for i, category in enumerate(info["categories"], 1):
+            guessed_theme = theme_guesses.get(i, "")
+            if guessed_theme:
+                # Check if the guess matches using the same logic as the environment
+                actual_theme = category["group"]
+                linking_terms = category.get("linking_terms", [])
+
+                # Use shared theme matching logic
+                if is_theme_match(actual_theme, guessed_theme, linking_terms):
+                    correct_themes += 1
+
+        return correct_themes / total_categories
+
+    def found_all_themes_bonus(self, completion, answer, state, info) -> float:
+        """
+        Returns 1.0 if all themes were correctly guessed, 0.0 otherwise.
+        Bonus reward for finding all themes.
+        """
+        theme_guesses = state.get("theme_guesses", {})
+        if not theme_guesses:
+            return 0.0
+
+        total_categories = len(info["categories"])
+        if total_categories == 0:
+            return 0.0
+
+        # Check if all themes are correct
+        for i, category in enumerate(info["categories"], 1):
+            guessed_theme = theme_guesses.get(i, "")
+            if not guessed_theme:
+                return 0.0
+
+            actual_theme = category["group"]
+            linking_terms = category.get("linking_terms", [])
+
+            # If any theme doesn't match, no bonus
+            if not is_theme_match(actual_theme, guessed_theme, linking_terms):
+                return 0.0
+
+        # All themes match!
+        return 1.0
