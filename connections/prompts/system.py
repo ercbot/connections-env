@@ -1,120 +1,75 @@
 from ..rulesets import RulesetConfig
 
-
 MISTAKE_RULES_ALWAYS_COUNT = """\
-- If you don't correctly guess all the words in a category you will use one of your {max_mistakes} mistakes, make {max_mistakes} mistakes and you lose."""
+- Incorrect guess = 1 mistake. {max_mistakes} mistakes = game over."""
 
 
 MISTAKE_RULES_COUNT_AT_END = """\
-- Early in the game, incorrect guesses don't count as mistakes
-- When you have {mistakes_count_when_x_categories_remain} or fewer categories remaining, incorrect guesses start counting as mistakes
-- Make {max_mistakes} mistakes during the mistake-counting phase and you lose."""
+- Early guesses don't count as mistakes
+- When {mistakes_count_when_x_categories_remain} or fewer categories remain, mistakes start counting
+- {max_mistakes} mistakes during counting phase = game over"""
 
 
 ONE_AWAY_HINT = """\
-- If you correctly guessed most but not all words in a category, you will receive a "One Away" hint but still use one of your mistakes."""
+- All but one member of a group = "One Away" hint, still costs 1 mistake."""
 
 
 THEMES_REVEALED_IMMEDIATELY = """\
-When you correctly identify a category, its theme will be revealed to you."""
+Correct guesses reveal the theme immediately."""
 
 
 THEMES_REVEALED_AT_END = """\
-Category themes are not revealed until the end of the game."""
+Themes revealed only at game end."""
 
 
-GAME_EXAMPLES = """
+GAME_EXAMPLES = """\
+Examples:
+- Theme: FISH, Words: [BASS, TROUT, SALMON, TUNA]
+- Theme: FIRE ____, Words: [ANT, DRILL, ISLAND, OPAL]
 
-Categories Examples (these examples show 4-word groups, but group sizes may vary):
-- Theme: FISH, Members: [BASS, TROUT, SALMON, TUNA]
-- Theme: FIRE ____, Members: [ANT, DRILL, ISLAND, OPAL]
-
-<tips>
-<tip>
-Each puzzle has exactly one solution. Watch out for words that seem to belong to multiple categories.
-
-Example:
-Words: [RAM, STAG, BILLY, SINGLE, FREE, SOLO, BUCK, JACK]
-
-Answers:
-- Theme: Available (Romantically) [STAG, SINGLE, SOLO, FREE]
-- Theme: Male Animals [RAM, BUCK, BILLY, JACK]
-
-STAG could be a male animal, but the "Available" group needs it to complete the set, while the male animals can form a complete group without it.
-</tip>
-<tip>
-Categories will always have a more specific theme than "5-letter words", "names", "verbs", etc.
-</tip>
-<tip>
-Group sizes are consistent within each puzzle - all groups in a puzzle will have the same number of words.
-</tip>
-</tips>
-
+Tips:
+- Each puzzle has one solution. Words may fit multiple categories - choose carefully.
+- Themes are specific, not generic like "5-letter words" or "verbs".
+- All groups have the same amount of words, specified at game start.
 """
 
 
 # Word Guessing Instructions
-WORD_GUESSING_INSTRUCTIONS = """
-How to play:
-1. Select words that you think belong together. Your guess can have these outcomes:
-- If all words are in the same category, you will complete that group. You now know these words can't be part of any other categories.
+WORD_GUESSING_INSTRUCTIONS = """\
+Select words that belong together:
+- All correct = group completed
 {mistake_rules}
 {one_away_hint}
-2. Repeat until you have found all groups (you win) or make too many mistakes (you lose).{theme_revelation}{game_examples}
 
-You don't have to guess the theme, just the words in the group. The order of the words in the category doesn't matter.
+Repeat until all groups found (win) or too many mistakes (lose).
+{theme_revelation}
+{game_examples}
 
-IMPORTANT: Make only ONE guess at a time. Do not include multiple <guess> tags in your response.
+Format:
+<guess>[WORD1, WORD2, WORD3, ...]</guess>
 
-Format your guess using XML tags as a list of words. The number of words per group will be specified when the game begins:
+CRITICAL: ONE guess per response. No multiple <guess> tags."""
 
-<guess>[WORD1, WORD2, WORD3, ...]</guess>"""
+CATEGORY_GUESSING_INSTRUCTIONS = """\
+After finding all word groups, guess each category's theme for bonus points.
 
-CATEGORY_GUESSING_INSTRUCTIONS = """
-Once you have successfully guessed all categories (or ran out of mistakes), you'll have a chance to guess the themes for bonus points.
+Format:
+<category_1_guess>theme</category_1_guess>
+<category_2_guess>theme</category_2_guess>
+(etc.)
 
-You will see all the categories with their words revealed. Your task is to guess what theme connects the words in each category.
+Themes can be: common category, words following/preceding a phrase, shared property, or other connection."""
 
-Format your theme guesses using XML tags for each category:
-
-<category_1_guess>your theme guess</category_1_guess>
-<category_2_guess>your theme guess</category_2_guess>
-... (and so on for each category)
-
-Think about what connects the words - it could be:
-- A common category or type
-- Words that can follow/precede a common word or phrase
-- A shared characteristic or property
-- Any other thematic connection
-
-Example:
-
-prompt:
-Category 1: [BASS, TROUT, SALMON, TUNA]
-Category 2: [ANT, DRILL, ISLAND, OPAL]
-Category 3: [STAG, SINGLE, SOLO, FREE]
-Category 4: [RAM, BUCK, BILLY, JACK]
-
-answer:
-<category_1_guess>Fish</category_1_guess>
-<category_2_guess>Starts with fire</category_2_guess>
-<category_3_guess>Available</category_3_guess>
-<category_4_guess>Male animals</category_4_guess>
-"""
-
-MULTI_PHASE_INSTRUCTIONS = """
-<round_1>
+MULTI_PHASE_INSTRUCTIONS = """\
+## Round 1
 {word_guessing_instructions}
-</round_1>
 
-<round_2>
+## Round 2
 {category_guessing_instructions}
-</round_2>
 """
 
 BASE_INSTRUCTIONS = """\
-You are playing a game of *Connections*
-The words are grouped into secret categories. The words in each category are connected by a common theme. Your goal is to find the members of the groups.
+You are playing *Connections*. Words are grouped by theme. Find the group members.
 
 {game_instructions}
 """

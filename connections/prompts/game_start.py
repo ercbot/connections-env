@@ -1,6 +1,5 @@
 from ..rulesets import RulesetConfig
 
-
 TITLE_TEMPLATE = "Puzzle Title: {title}"
 
 WORDS_TEMPLATE = "Words: {words}"
@@ -22,7 +21,7 @@ def generate_game_start_prompt(
     num_groups: int,
     ruleset_config: RulesetConfig,
     title: str | None = None,
-    tags: list[str] | None = None
+    tags: list[str] | None = None,
 ) -> str:
     """Generate game start prompt based on ruleset configuration and puzzle specifics."""
 
@@ -47,7 +46,7 @@ def generate_game_start_prompt(
         # Mistakes only count later (PuzzGrid style)
         mistake_info = MISTAKES_COUNT_AT_END.format(
             mistakes_count_when_x_categories_remain=threshold,
-            max_mistakes=ruleset_config.max_mistakes
+            max_mistakes=ruleset_config.max_mistakes,
         )
 
     # Build the base prompt
@@ -64,15 +63,17 @@ def generate_game_start_prompt(
         tags_str = ", ".join(tags)
         prompt_parts.append(TAGS_TEMPLATE.format(tags=tags_str))
 
-    prompt_parts.extend([
-        "",
-        INITIAL_STATE,
-        GRID_SIZE_INFO.format(
-            grid_size=grid_size,
-            total_categories=total_categories,
-            expected_group_size=expected_group_size
-        ),
-        mistake_info
-    ])
+    prompt_parts.extend(
+        [
+            "",
+            INITIAL_STATE,
+            GRID_SIZE_INFO.format(
+                grid_size=grid_size,
+                total_categories=total_categories,
+                expected_group_size=expected_group_size,
+            ),
+            mistake_info,
+        ]
+    )
 
     return "\n".join(prompt_parts)
