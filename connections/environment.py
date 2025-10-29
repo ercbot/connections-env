@@ -1,5 +1,6 @@
 import logging
-from typing import Tuple
+from dataclasses import asdict, dataclass
+from typing import Literal, Optional, Tuple
 
 from datasets import Dataset, load_dataset
 from verifiers import MultiTurnEnv
@@ -11,6 +12,21 @@ from .prompts import generate_system_prompt
 from .rubric import ConnectionsRubric
 from .rulesets import get_ruleset_config
 from .theme_matching import is_theme_match
+
+
+@dataclass
+class GuessRecord:
+    """Records information about a single guess attempt.
+
+    Status meanings:
+    - invalid: Guess failed validation (wrong count, invalid words, or already-found words)
+    - incorrect: Valid guess but doesn't match any category
+    - one_away: Valid guess that's one word away from matching a category
+    - correct: Valid guess that exactly matches a category
+    """
+    words: list[str]  # The words that were guessed
+    status: Literal["invalid", "incorrect", "one_away", "correct"]
+    category_idx: Optional[int] = None  # Which category (for one_away or correct status)
 
 logger = logging.getLogger(__name__)
 
@@ -53,22 +69,19 @@ class ConnectionsEnv(MultiTurnEnv):
             **kwargs,
         )
 
-    async def is_completed(
-        self, messages: Messages, state: State
-    ) -> bool:
+    async def is_completed(self, messages: Messages, state: State, **kwargs) -> bool:
         """
         Check if the game is completed.
         Game ends when:
         1. All categories are found (win) and theme guessing is complete (if enabled)
         2. Max mistakes are made (lose)
         3. Max turns reached
+        4. Prompt too long
         """
-        # Check if we've reached max turns
-        if (
-            len([msg for msg in messages if msg.get("role") == "assistant"])
-            >= self.max_turns
-        ):
+        # Check parent class completion conditions (max turns, prompt too long)
+        if await super().is_completed(messages, state, **kwargs):
             return True
+
         # Check if we've made max mistakes
         if state.get("mistakes", 0) >= self.ruleset_config.max_mistakes:
             return True
@@ -127,6 +140,9 @@ class ConnectionsEnv(MultiTurnEnv):
             for category in state["info"]["categories"]:
                 all_words.extend([word.lower() for word in category["members"]])
             state["all_words"] = set(all_words)
+        if "guess_history" not in state:
+            # Track all guesses with metadata for reward calculation
+            state["guess_history"] = []
 
         # Get the AI's last response
         last_message = messages[-1]
@@ -224,10 +240,11 @@ class ConnectionsEnv(MultiTurnEnv):
             try:
                 guessed_words = self.parser.parse_answer_as_list(last_message_content)
             except Exception as e:
-                # If parsing fails, count as a mistake
-                if self._should_count_mistakes(state):
-                    state["mistakes"] += 1
-                state["last_error"] = f"Error when trying to parse your guess: {str(e)}"
+                # If parsing fails, don't count as mistake - just ask to retry
+                state["last_error"] = f"Invalid guess format: {str(e)}. This did not cost a mistake, try again."
+                # Record invalid guess
+                guess_record = GuessRecord(words=[], status="invalid")
+                state["guess_history"].append(asdict(guess_record))
                 return state
 
             # Get expected group size from the first category
@@ -239,9 +256,17 @@ class ConnectionsEnv(MultiTurnEnv):
 
             # Validate the guess - check count
             if len(guessed_words) != expected_group_size:
-                if self._should_count_mistakes(state):
-                    state["mistakes"] += 1
-                state["last_error"] = f"Please guess exactly {expected_group_size} words. You guessed {len(guessed_words)}."
+                remaining_words = [
+                    word for word in state["all_words"] if word not in state["found_words"]
+                ]
+                state["last_error"] = (
+                    f"Invalid guess, you guessed {len(guessed_words)} words but need exactly {expected_group_size}. "
+                    f"This did not cost a mistake, try again.\n"
+                    f"Remaining words: {', '.join(sorted(remaining_words))}"
+                )
+                # Record invalid guess
+                guess_record = GuessRecord(words=guessed_words, status="invalid")
+                state["guess_history"].append(asdict(guess_record))
                 return state
 
             # Check if all guessed words are valid
@@ -249,25 +274,47 @@ class ConnectionsEnv(MultiTurnEnv):
                 word for word in guessed_words if word not in state["all_words"]
             ]
             if invalid_words:
-                if self._should_count_mistakes(state):
-                    state["mistakes"] += 1
-                state["last_error"] = f"Invalid words: {', '.join(invalid_words)}. These words are not in the game."
+                remaining_words = [
+                    word for word in state["all_words"] if word not in state["found_words"]
+                ]
+                word_label = "word" if len(invalid_words) == 1 else "words"
+                state["last_error"] = (
+                    f"Invalid guess, the {word_label} {', '.join(invalid_words)} {'is' if len(invalid_words) == 1 else 'are'} not in the game. "
+                    f"This did not cost a mistake, try again.\n"
+                    f"Remaining words: {', '.join(sorted(remaining_words))}"
+                )
+                # Record invalid guess
+                guess_record = GuessRecord(words=guessed_words, status="invalid")
+                state["guess_history"].append(asdict(guess_record))
                 return state
 
             # Check if words are already found
-            already_found = [word for word in guessed_words if word in state["found_words"]]
+            already_found = [
+                word for word in guessed_words if word in state["found_words"]
+            ]
             if already_found:
-                if self._should_count_mistakes(state):
-                    state["mistakes"] += 1
-                state["last_error"] = f"Words already found: {', '.join(already_found)}."
+                remaining_words = [
+                    word for word in state["all_words"] if word not in state["found_words"]
+                ]
+                word_label = "word" if len(already_found) == 1 else "words"
+                state["last_error"] = (
+                    f"Invalid guess, you've already found the {word_label}: {', '.join(already_found)}. "
+                    f"This did not cost a mistake, try again.\n"
+                    f"Remaining words: {', '.join(sorted(remaining_words))}"
+                )
+                # Record invalid guess
+                guess_record = GuessRecord(words=guessed_words, status="invalid")
+                state["guess_history"].append(asdict(guess_record))
                 return state
 
             # Check if the guess matches a category
             correct_category = None
-            for category in state["info"]["categories"]:
+            correct_category_idx = None
+            for idx, category in enumerate(state["info"]["categories"]):
                 category_words = set([word.lower() for word in category["members"]])
                 if set(guessed_words) == category_words:
                     correct_category = category
+                    correct_category_idx = idx
                     break
 
             if correct_category:
@@ -276,26 +323,50 @@ class ConnectionsEnv(MultiTurnEnv):
                 state["found_words"].update(guessed_words)
                 state["last_correct_category"] = correct_category
                 state["last_error"] = None
+                # Record valid + correct guess
+                guess_record = GuessRecord(
+                    words=guessed_words,
+                    status="correct",
+                    category_idx=correct_category_idx
+                )
+                state["guess_history"].append(asdict(guess_record))
             else:
                 # Incorrect guess
                 if self._should_count_mistakes(state):
                     state["mistakes"] += 1
 
                 # Check for "One Away" if ruleset allows
-                state["last_one_away"] = False
+                # IMPORTANT: Only count as one_away if it was a VALID guess
+                # (already validated: correct count, all words in game, no already-found words)
+                guess_status = "incorrect"
+                one_away_category_idx = None
+
                 if self.ruleset_config.show_one_away_hints:
                     max_correct = 0
-                    for category in state["info"]["categories"]:
-                        category_words = set([word.lower() for word in category["members"]])
+                    best_category_idx = None
+                    for idx, category in enumerate(state["info"]["categories"]):
+                        category_words = set(
+                            [word.lower() for word in category["members"]]
+                        )
                         correct_count = len(set(guessed_words) & category_words)
                         if correct_count > max_correct:
                             max_correct = correct_count
+                            best_category_idx = idx
 
                     if max_correct == expected_group_size - 1:
-                        state["last_one_away"] = True
+                        guess_status = "one_away"
+                        one_away_category_idx = best_category_idx
 
+                state["last_one_away"] = (guess_status == "one_away")
                 state["last_correct_category"] = None
                 state["last_error"] = None
+                # Record valid but incorrect guess
+                guess_record = GuessRecord(
+                    words=guessed_words,
+                    status=guess_status,
+                    category_idx=one_away_category_idx
+                )
+                state["guess_history"].append(asdict(guess_record))
 
         # ============================================================
         # THEME GUESSING PHASE

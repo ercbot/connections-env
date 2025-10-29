@@ -10,9 +10,7 @@ class ConnectionsRubric(Rubric):
         super().__init__(parser=parser, **kwargs)
         # Word Grouping Reward Funcs
         # Validity Reward Funcs
-        self.add_reward_func(self.guessed_correct_number_of_words, 0.25)
-        self.add_reward_func(self.proportional_valid_words, 0.25)
-        self.add_reward_func(self.all_words_valid, 0.25)
+        self.add_reward_func(self.valid_guesses, 0.5)
         # Correctness Reward Funcs
         self.add_reward_func(self.almost_found_categories, 0.5)
         self.add_reward_func(self.found_categories, 4.0)
@@ -25,124 +23,42 @@ class ConnectionsRubric(Rubric):
         self.add_reward_func(self.found_themes, 4.0)
         self.add_reward_func(self.found_all_themes_bonus, 1.0)
 
-    def guessed_correct_number_of_words(self, completion, answer, state, info) -> float:
+    def valid_guesses(self, completion, answer, state, info) -> float:
         """
-        Proportion of guesses that had the correct number of words.
+        Proportion of guesses that were valid (not invalid status).
+        Valid statuses: correct, incorrect, one_away
+        Invalid status: invalid
         """
-        total_guesses = sum(1 for msg in completion if msg.get("role") == "assistant")
-        if total_guesses == 0:
+        guess_history = state.get("guess_history", [])
+        if not guess_history:
             return 0.0
 
-        # Get expected group size from the first category
-        expected_group_size = (
-            len(info["categories"][0]["members"]) if info["categories"] else 4
-        )
-
-        valid_format_guesses = 0
-        for msg in completion:
-            if msg.get("role") == "assistant":
-                response = self.parser.parse_answer_as_list(msg["content"])
-                if len(response) == expected_group_size:
-                    valid_format_guesses += 1
-
-        return valid_format_guesses / total_guesses
-
-    def proportional_valid_words(self, completion, answer, state, info) -> float:
-        """
-        Average proportion of valid words across all guesses.
-        """
-        # Get all words in the game
-        all_game_words = set()
-        for category in info["categories"]:
-            all_game_words.update([word.lower() for word in category["members"]])
-
-        total_proportion = 0.0
-        total_guesses = 0
-
-        for msg in completion:
-            if msg.get("role") == "assistant":
-                response = self.parser.parse_answer_as_list(msg["content"])
-                if response:
-                    valid_count = sum(1 for word in response if word in all_game_words)
-                    proportion = valid_count / len(response)
-                    total_proportion += proportion
-                    total_guesses += 1
-
-        return total_proportion / total_guesses if total_guesses > 0 else 0.0
-
-    def all_words_valid(self, completion, answer, state, info) -> float:
-        """
-        Proportion of guesses where all words were valid.
-        """
-        # Get all words in the game
-        all_game_words = set()
-        for category in info["categories"]:
-            all_game_words.update([word.lower() for word in category["members"]])
-
-        # Get expected group size
-        expected_group_size = (
-            len(info["categories"][0]["members"]) if info["categories"] else 4
-        )
-
-        perfect_guesses = 0
-        total_guesses = 0
-
-        for msg in completion:
-            if msg.get("role") == "assistant":
-                response = self.parser.parse_answer_as_list(msg["content"])
-                if response and len(response) == expected_group_size:
-                    valid_count = sum(1 for word in response if word in all_game_words)
-                    if valid_count == len(response):
-                        perfect_guesses += 1
-                    total_guesses += 1
-
-        return perfect_guesses / total_guesses if total_guesses > 0 else 0.0
+        valid_guesses = sum(1 for guess in guess_history if guess["status"] != "invalid")
+        return valid_guesses / len(guess_history)
 
     def almost_found_categories(self, completion, answer, state, info) -> float:
         """
-        Count all guesses where the model guessed almost all words in a category (e.g., 3/4).
-        Can only be given once per category, and is not given if that category was later correctly guessed.
+        Count "one away" guesses for categories that were never correctly found.
+        This avoids double-counting: if you get one_away then later get it correct,
+        you only get credit for the correct guess, not both.
         """
-        # Get categories that were successfully found (don't reward for these)
-        found_categories = state.get("found_categories", 0)
+        guess_history = state.get("guess_history", [])
 
-        # Track which categories we've already given "almost found" credit for
-        almost_found_categories = set()
+        # Track which categories were found correctly
+        correctly_found_categories = set()
+        # Track which categories had one_away guesses
+        one_away_categories = set()
 
-        # Get expected group size and calculate "almost" threshold
-        expected_group_size = (
-            len(info["categories"][0]["members"]) if info["categories"] else 4
-        )
-        almost_threshold = expected_group_size - 1  # e.g., 3 for 4-word groups
+        for guess in guess_history:
+            if guess["status"] == "correct" and guess.get("category_idx") is not None:
+                correctly_found_categories.add(guess["category_idx"])
+            elif guess["status"] == "one_away" and guess.get("category_idx") is not None:
+                one_away_categories.add(guess["category_idx"])
 
-        # Go through all assistant messages
-        for msg in completion:
-            if msg.get("role") == "assistant":
-                response = self.parser.parse_answer_as_list(msg["content"])
-                if (
-                    len(response) == expected_group_size
-                ):  # Only count proper-sized guesses
-                    response_set = set(response)
+        # Only reward one_away for categories that were never correctly found
+        reward_categories = one_away_categories - correctly_found_categories
 
-                    # Check each category to see if this guess was almost correct
-                    for i, category in enumerate(info["categories"]):
-                        category_words = set(
-                            [word.lower() for word in category["members"]]
-                        )
-                        overlap = len(response_set & category_words)
-
-                        # If almost all words match and we haven't counted this category yet
-                        if (
-                            overlap == almost_threshold
-                            and i not in almost_found_categories
-                        ):
-                            almost_found_categories.add(i)
-
-        # Don't count categories that were later successfully found
-        # This assumes categories are found in order, but we could make this more sophisticated
-        categories_to_reward = max(0, len(almost_found_categories) - found_categories)
-
-        return float(categories_to_reward)
+        return float(len(reward_categories))
 
     def found_categories(self, completion, answer, state, info) -> float:
         """
@@ -163,13 +79,13 @@ class ConnectionsRubric(Rubric):
         if categories == 0:
             return 0.0
 
-        # Count assistant messages (actual guesses)
-        guesses = sum(1 for msg in completion if msg.get("role") == "assistant")
-        if guesses == 0:
+        # Count word guesses from guess_history (excludes theme guessing)
+        guess_history = state.get("guess_history", [])
+        if not guess_history:
             return 0.0
 
         # Perfect efficiency is 1 guess per category
-        efficiency = categories / guesses
+        efficiency = categories / len(guess_history)
         return min(efficiency, 1.0)  # Cap at 1.0 for perfect efficiency
 
     def attempted_theme_guessing(self, completion, answer, state, info) -> float:
