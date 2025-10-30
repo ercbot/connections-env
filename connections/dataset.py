@@ -4,10 +4,12 @@ from .prompts import generate_game_start_prompt
 from .rulesets import RulesetConfig
 
 
-def prep_dataset(dataset_dict: DatasetDict, ruleset_config: RulesetConfig) -> tuple[Dataset, Dataset | None]:
+def prep_dataset(
+    dataset_dict: DatasetDict, ruleset_config: RulesetConfig
+) -> tuple[Dataset, Dataset | None]:
     """
     Internal function to prepare the default HuggingFace dataset for the Connections environment.
-    
+
     Converts the raw dataset format:
     - all_words: list of words
     - group_words: list of word lists
@@ -29,7 +31,9 @@ def prep_dataset(dataset_dict: DatasetDict, ruleset_config: RulesetConfig) -> tu
         categories = []
         group_linking_terms = example.get("group_linking_terms", [])
 
-        for i, (words_list, theme) in enumerate(zip(example["group_words"], example["group_themes"])):
+        for i, (words_list, theme) in enumerate(
+            zip(example["group_words"], example["group_themes"])
+        ):
             # Extract linking terms for this category
             linking_terms = []
             if i < len(group_linking_terms):
@@ -37,13 +41,15 @@ def prep_dataset(dataset_dict: DatasetDict, ruleset_config: RulesetConfig) -> tu
                 raw_terms = group_linking_terms[i]
                 if isinstance(raw_terms, str):
                     # Handle both comma and space separation
-                    linking_terms = [term.strip() for term in raw_terms.replace(',', ' ').split() if term.strip()]
+                    linking_terms = [
+                        term.strip()
+                        for term in raw_terms.replace(",", " ").split()
+                        if term.strip()
+                    ]
 
-            categories.append({
-                "group": theme,
-                "members": words_list,
-                "linking_terms": linking_terms
-            })
+            categories.append(
+                {"group": theme, "members": words_list, "linking_terms": linking_terms}
+            )
 
         # Extract puzzle data explicitly
         words = example["all_words"]
@@ -59,7 +65,7 @@ def prep_dataset(dataset_dict: DatasetDict, ruleset_config: RulesetConfig) -> tu
             num_groups=num_groups,
             ruleset_config=ruleset_config,
             title=title,
-            tags=tags
+            tags=tags,
         )
 
         return {
