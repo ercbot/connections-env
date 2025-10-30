@@ -33,7 +33,7 @@ def generate_game_start_prompt(
         total_categories = num_groups
 
     # Format the words with backticks
-    words_str = ", ".join(f'`{word}`' for word in words)
+    words_str = ", ".join(f"`{word}`" for word in words)
 
     # Determine mistake display based on ruleset
     threshold = ruleset_config.mistakes_count_when_x_categories_remain

@@ -25,9 +25,13 @@ class GuessRecord:
     - one_away: Valid guess that's one word away from matching a category
     - correct: Valid guess that exactly matches a category
     """
+
     words: list[str]  # The words that were guessed
     status: Literal["invalid", "incorrect", "one_away", "correct"]
-    category_idx: Optional[int] = None  # Which category (for one_away or correct status)
+    category_idx: Optional[int] = (
+        None  # Which category (for one_away or correct status)
+    )
+
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +43,7 @@ class ConnectionsEnv(MultiTurnEnv):
 
     def __init__(
         self,
-        ruleset: str = "puzzgrid",
+        ruleset: str = "nyt",
         dataset: Dataset | None = None,
         eval_dataset: Dataset | None = None,
         max_turns: int = 20,
@@ -145,10 +149,10 @@ class ConnectionsEnv(MultiTurnEnv):
         if "found_words" not in state:
             state["found_words"] = set()
         if "all_words" not in state:
-            # Extract all words from the categories structure
+            # Extract all words from the categories structure with original capitalization
             all_words = []
             for category in state["info"]["categories"]:
-                all_words.extend([word.lower() for word in category["members"]])
+                all_words.extend(category["members"])
             state["all_words"] = set(all_words)
         if "guess_history" not in state:
             # Track all guesses with metadata for reward calculation
@@ -251,7 +255,9 @@ class ConnectionsEnv(MultiTurnEnv):
                 guessed_words = self.parser.parse_answer_as_list(last_message_content)
             except Exception as e:
                 # If parsing fails, don't count as mistake - just ask to retry
-                state["last_error"] = f"Invalid guess format: {str(e)}. This did not cost a mistake, try again."
+                state["last_error"] = (
+                    f"Invalid guess format: {str(e)}. This did not cost a mistake, try again."
+                )
                 # Record invalid guess
                 guess_record = GuessRecord(words=[], status="invalid")
                 state["guess_history"].append(asdict(guess_record))
@@ -266,10 +272,15 @@ class ConnectionsEnv(MultiTurnEnv):
 
             # Validate the guess - check count
             if len(guessed_words) != expected_group_size:
+                found_words_lower_set = {word.lower() for word in state["found_words"]}
                 remaining_words = [
-                    word for word in state["all_words"] if word not in state["found_words"]
+                    word
+                    for word in state["all_words"]
+                    if word.lower() not in found_words_lower_set
                 ]
-                remaining_words_str = ', '.join(f'`{word}`' for word in sorted(remaining_words))
+                remaining_words_str = ", ".join(
+                    f"`{word}`" for word in sorted(remaining_words)
+                )
                 state["last_error"] = (
                     f"Invalid guess, you guessed {len(guessed_words)} words but need exactly {expected_group_size}. "
                     f"This did not cost a mistake, try again.\n"
@@ -280,17 +291,23 @@ class ConnectionsEnv(MultiTurnEnv):
                 state["guess_history"].append(asdict(guess_record))
                 return state
 
-            # Check if all guessed words are valid
+            # Check if all guessed words are valid (case-insensitive)
+            all_words_lower = {word.lower() for word in state["all_words"]}
             invalid_words = [
-                word for word in guessed_words if word not in state["all_words"]
+                word for word in guessed_words if word.lower() not in all_words_lower
             ]
             if invalid_words:
+                found_words_lower_set = {word.lower() for word in state["found_words"]}
                 remaining_words = [
-                    word for word in state["all_words"] if word not in state["found_words"]
+                    word
+                    for word in state["all_words"]
+                    if word.lower() not in found_words_lower_set
                 ]
                 word_label = "word" if len(invalid_words) == 1 else "words"
-                invalid_words_str = ', '.join(f'`{word}`' for word in invalid_words)
-                remaining_words_str = ', '.join(f'`{word}`' for word in sorted(remaining_words))
+                invalid_words_str = ", ".join(f"`{word}`" for word in invalid_words)
+                remaining_words_str = ", ".join(
+                    f"`{word}`" for word in sorted(remaining_words)
+                )
                 state["last_error"] = (
                     f"Invalid guess, the {word_label} {invalid_words_str} {'is' if len(invalid_words) == 1 else 'are'} not in the game. "
                     f"This did not cost a mistake, try again.\n"
@@ -301,17 +318,23 @@ class ConnectionsEnv(MultiTurnEnv):
                 state["guess_history"].append(asdict(guess_record))
                 return state
 
-            # Check if words are already found
+            # Check if words are already found (case-insensitive)
+            found_words_lower = {word.lower() for word in state["found_words"]}
             already_found = [
-                word for word in guessed_words if word in state["found_words"]
+                word for word in guessed_words if word.lower() in found_words_lower
             ]
             if already_found:
+                found_words_lower_set = {word.lower() for word in state["found_words"]}
                 remaining_words = [
-                    word for word in state["all_words"] if word not in state["found_words"]
+                    word
+                    for word in state["all_words"]
+                    if word.lower() not in found_words_lower_set
                 ]
                 word_label = "word" if len(already_found) == 1 else "words"
-                already_found_str = ', '.join(f'`{word}`' for word in already_found)
-                remaining_words_str = ', '.join(f'`{word}`' for word in sorted(remaining_words))
+                already_found_str = ", ".join(f"`{word}`" for word in already_found)
+                remaining_words_str = ", ".join(
+                    f"`{word}`" for word in sorted(remaining_words)
+                )
                 state["last_error"] = (
                     f"Invalid guess, you've already found the {word_label}: {already_found_str}. "
                     f"This did not cost a mistake, try again.\n"
@@ -333,18 +356,43 @@ class ConnectionsEnv(MultiTurnEnv):
                     break
 
             if correct_category:
-                # Correct guess!
+                # Correct guess! Store the original capitalized words from the category
                 state["found_categories"] += 1
-                state["found_words"].update(guessed_words)
+                state["found_words"].update(correct_category["members"])
                 state["last_correct_category"] = correct_category
                 state["last_error"] = None
                 # Record valid + correct guess
                 guess_record = GuessRecord(
                     words=guessed_words,
                     status="correct",
-                    category_idx=correct_category_idx
+                    category_idx=correct_category_idx,
                 )
                 state["guess_history"].append(asdict(guess_record))
+
+                # Auto-complete if only 1 category remains
+                if state["found_categories"] == total_categories - 1:
+                    # Find the last remaining category
+                    for idx, category in enumerate(state["info"]["categories"]):
+                        category_words_lower = {
+                            word.lower() for word in category["members"]
+                        }
+                        found_words_lower = {
+                            word.lower() for word in state["found_words"]
+                        }
+                        # Check if this category hasn't been found yet
+                        if not category_words_lower.intersection(found_words_lower):
+                            # Auto-complete this category
+                            state["found_categories"] += 1
+                            state["found_words"].update(category["members"])
+                            state["last_auto_completed_category"] = category
+                            # Record auto-completed category
+                            auto_guess_record = GuessRecord(
+                                words=category["members"],
+                                status="correct",
+                                category_idx=idx,
+                            )
+                            state["guess_history"].append(asdict(auto_guess_record))
+                            break
             else:
                 # Incorrect guess
                 if self._should_count_mistakes(state):
@@ -372,14 +420,14 @@ class ConnectionsEnv(MultiTurnEnv):
                         guess_status = "one_away"
                         one_away_category_idx = best_category_idx
 
-                state["last_one_away"] = (guess_status == "one_away")
+                state["last_one_away"] = guess_status == "one_away"
                 state["last_correct_category"] = None
                 state["last_error"] = None
                 # Record valid but incorrect guess
                 guess_record = GuessRecord(
                     words=guessed_words,
                     status=guess_status,
-                    category_idx=one_away_category_idx
+                    category_idx=one_away_category_idx,
                 )
                 state["guess_history"].append(asdict(guess_record))
 
@@ -441,18 +489,29 @@ class ConnectionsEnv(MultiTurnEnv):
             correct_category = state["last_correct_category"]
 
             if self.ruleset_config.reveal_themes_immediately:
-                response = f"Correct! Category {state['found_categories']}/{total_categories} found: {correct_category['group']} - {', '.join(correct_category['members'])}"
+                response = f"Correct! Category {state['found_categories'] - (1 if state.get('last_auto_completed_category') else 0)}/{total_categories} found: {correct_category['group']} - {', '.join(correct_category['members'])}"
             else:
-                response = f"Correct! Category {state['found_categories']}/{total_categories} found. Theme will be revealed at the end."
+                response = f"Correct! Category {state['found_categories'] - (1 if state.get('last_auto_completed_category') else 0)}/{total_categories} found. Theme will be revealed at the end."
+
+            # If last category was auto-completed, add that info
+            if state.get("last_auto_completed_category"):
+                auto_cat = state["last_auto_completed_category"]
+                if self.ruleset_config.reveal_themes_immediately:
+                    response += f"\n\nAll categories found! The last category was: {auto_cat['group']} - {', '.join(auto_cat['members'])}"
+                else:
+                    response += "\n\nAll categories found! The last category has been auto-completed."
+                # Clear the flag
+                state.pop("last_auto_completed_category", None)
 
             # Add remaining words if not all categories found
-            if state["found_categories"] < total_categories:
+            elif state["found_categories"] < total_categories:
+                found_words_lower_set = {word.lower() for word in state["found_words"]}
                 remaining_words = [
                     word
                     for word in state["all_words"]
-                    if word not in state["found_words"]
+                    if word.lower() not in found_words_lower_set
                 ]
-                remaining_words_str = ', '.join(f'`{word}`' for word in remaining_words)
+                remaining_words_str = ", ".join(f"`{word}`" for word in remaining_words)
                 response += f"\nRemaining words: {remaining_words_str}"
 
             return response

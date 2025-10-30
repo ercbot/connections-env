@@ -15,7 +15,9 @@ class RulesetConfig:
     """Configuration for different Connections game rulesets."""
 
     max_mistakes: int
-    mistakes_count_when_x_categories_remain: Union[int, Literal["any"]]  # Number of remaining categories when mistakes start counting, or "any" for always
+    mistakes_count_when_x_categories_remain: Union[
+        int, Literal["any"]
+    ]  # Number of remaining categories when mistakes start counting, or "any" for always
     show_one_away_hints: bool
     reveal_themes_immediately: bool
     end_game_theme_guessing: bool

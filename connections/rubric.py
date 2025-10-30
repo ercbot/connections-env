@@ -33,7 +33,9 @@ class ConnectionsRubric(Rubric):
         if not guess_history:
             return 0.0
 
-        valid_guesses = sum(1 for guess in guess_history if guess["status"] != "invalid")
+        valid_guesses = sum(
+            1 for guess in guess_history if guess["status"] != "invalid"
+        )
         return valid_guesses / len(guess_history)
 
     def almost_found_categories(self, completion, answer, state, info) -> float:
@@ -52,7 +54,9 @@ class ConnectionsRubric(Rubric):
         for guess in guess_history:
             if guess["status"] == "correct" and guess.get("category_idx") is not None:
                 correctly_found_categories.add(guess["category_idx"])
-            elif guess["status"] == "one_away" and guess.get("category_idx") is not None:
+            elif (
+                guess["status"] == "one_away" and guess.get("category_idx") is not None
+            ):
                 one_away_categories.add(guess["category_idx"])
 
         # Only reward one_away for categories that were never correctly found
@@ -70,10 +74,16 @@ class ConnectionsRubric(Rubric):
             return 0.0
         return float(state.get("found_categories", 0)) / total_categories
 
-    def efficiency_bonus(self, completion, answer, state) -> float:
+    def efficiency_bonus(self, completion, answer, state, info) -> float:
         """
-        Reward efficient play (fewer guesses per category found).
-        Perfect efficiency (4 categories in 4 guesses) = 1.0
+        Reward efficient play (fewer guesses to find all categories).
+        Perfect efficiency = finding all categories in the minimum possible guesses.
+
+        For a 4-category puzzle:
+        - Minimum guesses needed: 3 (4th is auto-completed)
+        - Perfect score: 3 guesses / 3 minimum = 1.0 (100%)
+        - Good score: 4 guesses / 3 minimum = 0.75 (75%)
+        - OK score: 6 guesses / 3 minimum = 0.5 (50%)
         """
         categories = state.get("found_categories", 0)
         if categories == 0:
@@ -84,8 +94,16 @@ class ConnectionsRubric(Rubric):
         if not guess_history:
             return 0.0
 
-        # Perfect efficiency is 1 guess per category
-        efficiency = categories / len(guess_history)
+        # Calculate minimum guesses needed (total categories - 1, since last is auto-completed)
+        total_categories = len(info["categories"])
+        min_guesses_needed = total_categories - 1
+
+        if min_guesses_needed == 0:
+            return 1.0  # Edge case: if only 1 category total
+
+        # Efficiency: minimum needed / actual guesses taken
+        # Fewer guesses = higher efficiency
+        efficiency = min_guesses_needed / len(guess_history)
         return min(efficiency, 1.0)  # Cap at 1.0 for perfect efficiency
 
     def attempted_theme_guessing(self, completion, answer, state, info) -> float:

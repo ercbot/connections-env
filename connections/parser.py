@@ -21,9 +21,13 @@ class ConnectionsParser(XMLParser):
 
     def parse_answer_as_list(self, completion: str) -> list[str]:
         # Check for multiple guess tags first
-        guess_matches = re.findall(r'<guess>.*?</guess>', completion, re.DOTALL | re.IGNORECASE)
+        guess_matches = re.findall(
+            r"<guess>.*?</guess>", completion, re.DOTALL | re.IGNORECASE
+        )
         if len(guess_matches) > 1:
-            raise ValueError(f"Multiple guess tags found ({len(guess_matches)}). Please submit only one guess.")
+            raise ValueError(
+                f"Multiple guess tags found ({len(guess_matches)}). Please submit only one guess."
+            )
 
         response = self.parse_answer(completion)
         if response is None:
@@ -41,7 +45,7 @@ class ConnectionsParser(XMLParser):
 
         # Extract backticked words (don't split commas inside backticks)
         # Match pattern: backticked content (anything between backticks)
-        pattern = r'`([^`]+)`'
+        pattern = r"`([^`]+)`"
         matches = re.findall(pattern, response)
 
         words = [match.lower().strip() for match in matches]
