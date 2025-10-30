@@ -39,7 +39,10 @@ class ConnectionsParser(XMLParser):
         if response.startswith("[") and response.endswith("]"):
             response = response[1:-1]  # Remove brackets
 
-        words = [
-            word.lower().strip().strip('"').strip("'") for word in response.split(",")
-        ]
+        # Extract backticked words (don't split commas inside backticks)
+        # Match pattern: backticked content (anything between backticks)
+        pattern = r'`([^`]+)`'
+        matches = re.findall(pattern, response)
+
+        words = [match.lower().strip() for match in matches]
         return [word for word in words if word]  # Filter out empty strings

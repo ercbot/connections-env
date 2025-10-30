@@ -3,8 +3,9 @@ from dataclasses import asdict, dataclass
 from typing import Literal, Optional, Tuple
 
 from datasets import Dataset, load_dataset
-from verifiers import MultiTurnEnv
 from verifiers.types import Messages, State
+
+from verifiers import MultiTurnEnv
 
 from .dataset import prep_dataset
 from .parser import ConnectionsParser
@@ -72,18 +73,25 @@ class ConnectionsEnv(MultiTurnEnv):
     async def is_completed(self, messages: Messages, state: State, **kwargs) -> bool:
         """
         Check if the game is completed.
-        Game ends when:
-        1. All categories are found (win) and theme guessing is complete (if enabled)
-        2. Max mistakes are made (lose)
-        3. Max turns reached
-        4. Prompt too long
+        Sets state["complete_reason"] to track why the game ended:
+        - "max_turns_reached": Maximum turn limit reached
+        - "prompt_too_long": Context became too long
+        - "max_mistakes": Player made too many mistakes
+        - "all_categories_found": All categories found (without theme guessing)
+        - "theme_guessing_complete": Game complete including theme guessing
         """
         # Check parent class completion conditions (max turns, prompt too long)
-        if await super().is_completed(messages, state, **kwargs):
+        if await self.max_turns_reached(state):
+            state["complete_reason"] = "max_turns_reached"
+            return True
+
+        if await self.prompt_too_long(state):
+            state["complete_reason"] = "prompt_too_long"
             return True
 
         # Check if we've made max mistakes
         if state.get("mistakes", 0) >= self.ruleset_config.max_mistakes:
+            state["complete_reason"] = "max_mistakes"
             return True
 
         # Check if we've found all categories
@@ -94,6 +102,7 @@ class ConnectionsEnv(MultiTurnEnv):
 
         if found_categories >= total_categories and not is_theme_guessing_enabled:
             # Without theme guessing - game is complete
+            state["complete_reason"] = "all_categories_found"
             return True
 
         # Check if the the theme has been guessed
@@ -101,6 +110,7 @@ class ConnectionsEnv(MultiTurnEnv):
 
         if is_theme_guessing_enabled and theme_guesses:
             # Check if state is NOT an empty dict
+            state["complete_reason"] = "theme_guessing_complete"
             return True
 
         return False
@@ -259,10 +269,11 @@ class ConnectionsEnv(MultiTurnEnv):
                 remaining_words = [
                     word for word in state["all_words"] if word not in state["found_words"]
                 ]
+                remaining_words_str = ', '.join(f'`{word}`' for word in sorted(remaining_words))
                 state["last_error"] = (
                     f"Invalid guess, you guessed {len(guessed_words)} words but need exactly {expected_group_size}. "
                     f"This did not cost a mistake, try again.\n"
-                    f"Remaining words: {', '.join(sorted(remaining_words))}"
+                    f"Remaining words: {remaining_words_str}"
                 )
                 # Record invalid guess
                 guess_record = GuessRecord(words=guessed_words, status="invalid")
@@ -278,10 +289,12 @@ class ConnectionsEnv(MultiTurnEnv):
                     word for word in state["all_words"] if word not in state["found_words"]
                 ]
                 word_label = "word" if len(invalid_words) == 1 else "words"
+                invalid_words_str = ', '.join(f'`{word}`' for word in invalid_words)
+                remaining_words_str = ', '.join(f'`{word}`' for word in sorted(remaining_words))
                 state["last_error"] = (
-                    f"Invalid guess, the {word_label} {', '.join(invalid_words)} {'is' if len(invalid_words) == 1 else 'are'} not in the game. "
+                    f"Invalid guess, the {word_label} {invalid_words_str} {'is' if len(invalid_words) == 1 else 'are'} not in the game. "
                     f"This did not cost a mistake, try again.\n"
-                    f"Remaining words: {', '.join(sorted(remaining_words))}"
+                    f"Remaining words: {remaining_words_str}"
                 )
                 # Record invalid guess
                 guess_record = GuessRecord(words=guessed_words, status="invalid")
@@ -297,10 +310,12 @@ class ConnectionsEnv(MultiTurnEnv):
                     word for word in state["all_words"] if word not in state["found_words"]
                 ]
                 word_label = "word" if len(already_found) == 1 else "words"
+                already_found_str = ', '.join(f'`{word}`' for word in already_found)
+                remaining_words_str = ', '.join(f'`{word}`' for word in sorted(remaining_words))
                 state["last_error"] = (
-                    f"Invalid guess, you've already found the {word_label}: {', '.join(already_found)}. "
+                    f"Invalid guess, you've already found the {word_label}: {already_found_str}. "
                     f"This did not cost a mistake, try again.\n"
-                    f"Remaining words: {', '.join(sorted(remaining_words))}"
+                    f"Remaining words: {remaining_words_str}"
                 )
                 # Record invalid guess
                 guess_record = GuessRecord(words=guessed_words, status="invalid")
@@ -437,7 +452,8 @@ class ConnectionsEnv(MultiTurnEnv):
                     for word in state["all_words"]
                     if word not in state["found_words"]
                 ]
-                response += f"\nRemaining words: {', '.join(remaining_words)}"
+                remaining_words_str = ', '.join(f'`{word}`' for word in remaining_words)
+                response += f"\nRemaining words: {remaining_words_str}"
 
             return response
 

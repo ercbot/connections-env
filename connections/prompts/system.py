@@ -24,15 +24,16 @@ Themes revealed only at game end."""
 
 GAME_EXAMPLES = """\
 Examples:
-- Theme: FISH, Words: [BASS, TROUT, SALMON, TUNA]
-- Theme: FIRE ____, Words: [ANT, DRILL, ISLAND, OPAL]
-
-Tips:
-- Each puzzle has one solution. Words may fit multiple categories - choose carefully.
-- Themes are specific, not generic like "5-letter words" or "verbs".
-- All groups have the same amount of words, specified at game start.
+- Theme: FISH, Words: [`BASS`, `TROUT`, `SALMON`, `TUNA`]
+- Theme: FIRE ____, Words: [`ANT`, `DRILL`, `ISLAND`, `OPAL`]
+- Theme: QUICKLY, Words: [`IN A FLASH`, `AT ONCE`, `RIGHT AWAY`, `IN NO TIME`]
 """
 
+GAME_TIPS = """\
+Tips:
+- Each puzzle has one solution. Words may fit multiple categories - choose carefully.
+- All groups have the same amount of words, specified at game start.
+"""
 
 # Word Guessing Instructions
 WORD_GUESSING_INSTRUCTIONS = """\
@@ -44,11 +45,16 @@ Select words that belong together:
 Repeat until all groups found (win) or too many mistakes (lose).
 {theme_revelation}
 {game_examples}
+{game_tips}
 
-Format:
-<guess>[WORD1, WORD2, WORD3, ...]</guess>
+Note: "word" is a catchall term, sometimes the "words" are whole phrases or other text.
+Whatever is between the backticks is the exact text of the "word".
 
-CRITICAL: ONE guess per response. No multiple <guess> tags."""
+In your response, indicate your guess with this format:
+<guess>[`WORD1`, `WORD2`, `WORD3`, ...]</guess>
+
+You can only make one guess per response, but your response can including reasoning or notes.
+"""
 
 CATEGORY_GUESSING_INSTRUCTIONS = """\
 After finding all word groups, guess each category's theme for bonus points.
@@ -108,6 +114,7 @@ def generate_system_prompt(ruleset_config: RulesetConfig) -> str:
             one_away_hint=one_away_hint,
             theme_revelation=theme_revelation,
             game_examples=GAME_EXAMPLES,
+            game_tips=GAME_TIPS,
         )
 
         game_instructions = MULTI_PHASE_INSTRUCTIONS.format(
@@ -121,6 +128,7 @@ def generate_system_prompt(ruleset_config: RulesetConfig) -> str:
             one_away_hint=one_away_hint,
             theme_revelation=theme_revelation,
             game_examples=GAME_EXAMPLES,
+            game_tips=GAME_TIPS,
         )
 
     return BASE_INSTRUCTIONS.format(game_instructions=game_instructions)
