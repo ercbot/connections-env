@@ -15,6 +15,8 @@ class ConnectionsRubric(Rubric):
         self.add_reward_func(self.almost_found_categories, 0.5)
         self.add_reward_func(self.found_categories, 4.0)
         self.add_reward_func(self.efficiency_bonus)
+        # Keep tokens within limit reward func
+        self.add_reward_func(self.keep_tokens_within_limit_reward_func, 0.5)
         if not self.ruleset_config.end_game_theme_guessing:
             return
         # Theme Guessing Reward Funcs
@@ -120,10 +122,43 @@ class ConnectionsRubric(Rubric):
         efficiency = min_guesses_needed / actual_guesses
         return min(efficiency, 1.0)  # Cap at 1.0 for perfect efficiency
 
+    def keep_tokens_within_limit_reward_func(
+        self, completion, answer, state, info
+    ) -> float:
+        """
+        Reward staying within token budget. Full reward under 1638 tokens (80% of 2048),
+        quadratic decay from 80%-100%, zero reward if over budget. This is to encourage shorter games for easier training.
+        """
+        MAX_TOKENS = 2048
+        TOKEN_PENALIZATION_THRESHOLD = 0.8
+
+        # count total tokens:
+        all_game_text = ""
+        for message in state.get("prompt", []):
+            all_game_text += message.get("content", "")
+        for message in state.get("completion", []):
+            all_game_text += message.get("content", "")
+
+        # estimate tokens as char length / 4
+        estimated_tokens = len(all_game_text) / 4
+
+        threshold_tokens = MAX_TOKENS * TOKEN_PENALIZATION_THRESHOLD
+
+        if estimated_tokens <= threshold_tokens:
+            return 1.0  # Full reward under threshold
+
+        if estimated_tokens >= MAX_TOKENS:
+            return 0.0  # No reward if over limit
+
+        # Quadratic decay: (1 - x²) where x is progress from threshold to max
+        progress = (estimated_tokens - threshold_tokens) / (
+            MAX_TOKENS - threshold_tokens
+        )
+        return 1.0 - (progress**2)
+
     def attempted_theme_guessing(self, completion, answer, state, info) -> float:
         """
         Returns 1.0 if the AI attempted to guess any themes, 0.0 otherwise.
-        Small reward to encourage theme guessing participation.
         """
         theme_guesses = state.get("theme_guesses", {})
         # Check if any theme guess was made (non-empty dict)
