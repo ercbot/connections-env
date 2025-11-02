@@ -8,15 +8,15 @@
 
 ### Datasets
 
-- **Primary dataset(s)**: `ericbotti/connections-puzzles` - Collection of Connections puzzles with themed word groups from PuzzGrid
+- **Primary dataset(s)**: `ericbotti/connections-puzzles` - Collection of Connections puzzles from PuzzGrid
 - **Source links**: https://huggingface.co/datasets/ericbotti/connections-puzzles
-- **Split sizes**: Train: 8,584 puzzles, Test: 954 puzzles
+- **Split sizes**: Train: 8,572 puzzles, Test: 953 puzzles
 
 ### Task
 
 - **Type**: multi-turn
 - **Parser**: XMLParser (custom ConnectionsParser extending XMLParser)
-- **Rubric overview**: Rewards valid guesses (0.75x), almost-correct guesses (0.5x), found categories (1.0x each), and efficiency bonuses
+- **Rubric overview**: Rewards valid guesses (0.5x), almost-correct guesses (0.5x), found categories (4.0x), and efficiency bonus (1.0x)
 
 ### Quickstart
 
@@ -29,7 +29,7 @@ uv run vf-eval connections
 Configure model and sampling:
 
 ```bash
-uv run vf-eval connections -m gpt-4o-mini -n 20 -r 3 -t 1024 -T 0.7 -a '{"max_turns": 10}'
+uv run vf-eval connections -m gpt-4o-mini -n 20 -r 3 -t 1024 -T 0.7 -a '{"ruleset": "nyt"}'
 ```
 
 Notes:
@@ -38,22 +38,83 @@ Notes:
 
 ### Environment Arguments
 
-| Arg            | Type         | Default | Description                                              |
-| -------------- | ------------ | ------- | -------------------------------------------------------- |
-| `max_turns`    | int          | `10`    | Maximum number of guesses allowed per game               |
-| `dataset`      | Dataset      | `None`  | Custom train dataset (if None, loads default HF dataset) |
-| `eval_dataset` | Dataset      | `None`  | Custom eval dataset (if None, uses test split from HF)  |
+| Arg            | Type            | Default | Description                                              |
+| -------------- | --------------- | ------- | -------------------------------------------------------- |
+| `ruleset`      | str             | `"nyt"` | Game ruleset: `"nyt"` or `"puzzgrid"` (see Rulesets)     |
+| `max_turns`    | int             | `20`    | Maximum number of conversation turns allowed per game    |
+| `dataset`      | Dataset \| None | `None`  | Custom train dataset (if None, loads default HF dataset) |
+| `eval_dataset` | Dataset \| None | `None`  | Custom eval dataset (if None, uses test split from HF)   |
+
+### Rulesets
+
+Two predefined rulesets are available, based on different puzzle platforms:
+
+**NYT (New York Times) - Default**
+
+```bash
+-a '{"ruleset": "nyt"}'
+```
+
+- 4 max mistakes
+- Mistakes always count (from the start)
+- Shows "one away" hints (3 out of 4 correct)
+- Reveals category themes immediately
+- No end-game theme guessing phase
+
+**PuzzGrid**
+
+```bash
+-a '{"ruleset": "puzzgrid"}'
+```
+
+- 3 max mistakes
+- Mistakes only count when 2 categories remain
+- No "one away" hints
+- Themes revealed at end
+- Has end-game theme guessing bonus round
 
 ### Metrics
 
-The rubric combines validity and correctness rewards:
+The rubric rewards both accuracy and efficiency:
 
-| Metric                     | Meaning                                                            |
-| -------------------------- | ------------------------------------------------------------------ |
-| `reward`                   | Weighted sum of all reward functions (max ~8.0 for perfect play)   |
-| `guessed_4_words`          | Proportion of guesses with exactly 4 words (0.25x weight)          |
-| `proportional_valid_words` | Average proportion of valid words per guess (0.25x weight)         |
-| `all_words_valid`          | Proportion of guesses where all 4 words were valid (0.25x weight)  |
-| `almost_found_categories`  | Count of 3/4 correct guesses per category (0.5x weight)            |
-| `found_categories`         | Total categories successfully found (1.0x weight each)             |
-| `efficiency_bonus`         | Reward for finding categories with fewer guesses (1.0x weight)     |
+| Metric                    | Weight | Description                                         |
+| ------------------------- | ------ | --------------------------------------------------- |
+| `reward`                  | -      | Total score (max 5.5 for perfect word-phase play)   |
+| `valid_guesses`           | 0.5    | Proportion of guesses that were valid (not invalid) |
+| `almost_found_categories` | 0.5    | Count of "one away" guesses for unfound categories  |
+| `found_categories`        | 4.0    | Proportion of categories found (0.0-1.0)            |
+| `efficiency_bonus`        | 1.0    | Reward for finding categories with fewer guesses    |
+
+**Theme Guessing Metrics** (only for `puzzgrid` ruleset):
+
+| Metric                             | Weight | Description                            |
+| ---------------------------------- | ------ | -------------------------------------- |
+| `attempted_theme_guessing`         | 0.25   | Attempted to guess themes              |
+| `guessed_correct_number_of_themes` | 0.5    | Provided correct number of guesses     |
+| `found_themes`                     | 4.0    | Proportion of themes correctly guessed |
+| `found_all_themes_bonus`           | 1.0    | Bonus for guessing all themes          |
+
+### Key Features
+
+- When all but one category has been found, the last is auto-completed.
+- All the AI's guesses (including invalid ones) are tracked in the "guess_history" state variable
+
+### Example Usage
+
+**Evaluate on test set with NYT ruleset:**
+
+```bash
+uv run vf-eval connections --model gpt-4.1-mini --rollouts 3
+```
+
+**Use PuzzGrid ruleset with theme guessing:**
+
+```bash
+uv run vf-eval connections --model gpt-4o --env-args '{"ruleset": "puzzgrid"}' --rollouts 5
+```
+
+**Custom max turns:**
+
+```bash
+uv run vf-eval connections --model claude-3-5-sonnet --env-args '{"max_turns": 15}' --rollouts 3
+```

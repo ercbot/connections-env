@@ -3,9 +3,8 @@ from dataclasses import asdict, dataclass
 from typing import Literal, Optional, Tuple
 
 from datasets import Dataset, load_dataset
-from verifiers.types import Messages, State
-
 from verifiers import MultiTurnEnv
+from verifiers.types import Messages, State
 
 from .dataset import prep_dataset
 from .parser import ConnectionsParser
@@ -543,7 +542,7 @@ class ConnectionsEnv(MultiTurnEnv):
         theme_results = []
         for i, category in enumerate(state["info"]["categories"], 1):
             actual_theme = category["group"]
-            guessed_theme = guesses.get(i, "No guess")
+            guessed_theme = guesses.get(i, None)
 
             # Enhanced theme matching with linking terms
             is_correct = is_theme_match(
@@ -553,8 +552,9 @@ class ConnectionsEnv(MultiTurnEnv):
                 correct_themes += 1
 
             status = "✓" if is_correct else "✗"
+            guess_display = guessed_theme if guessed_theme else "(no guess)"
             theme_results.append(
-                f"Category {i}: {actual_theme} {status} (You guessed: {guessed_theme})"
+                f"Category {i}: {actual_theme} {status} (You guessed: {guess_display})"
             )
 
         results_text = "\n".join(theme_results)

@@ -79,31 +79,45 @@ class ConnectionsRubric(Rubric):
         Reward efficient play (fewer guesses to find all categories).
         Perfect efficiency = finding all categories in the minimum possible guesses.
 
-        For a 4-category puzzle:
-        - Minimum guesses needed: 3 (4th is auto-completed)
-        - Perfect score: 3 guesses / 3 minimum = 1.0 (100%)
-        - Good score: 4 guesses / 3 minimum = 0.75 (75%)
-        - OK score: 6 guesses / 3 minimum = 0.5 (50%)
+        For a 4-category puzzle with perfect play:
+        - Model makes 3 manual guesses
+        - 4th category auto-completed (added to guess_history)
+        - guess_history has 4 entries total
+        - Efficiency: 3 / 3 = 100% (excluding auto-complete from denominator)
+
+        Examples for 4-category puzzle:
+        - 3 manual + 1 auto (4 total in history): 3/3 = 100%
+        - 4 manual + 1 auto (5 total in history): 3/4 = 75%
+        - 5 manual + 1 auto (6 total in history): 3/5 = 60%
         """
         categories = state.get("found_categories", 0)
         if categories == 0:
             return 0.0
 
-        # Count word guesses from guess_history (excludes theme guessing)
+        # Count word guesses from guess_history
         guess_history = state.get("guess_history", [])
         if not guess_history:
             return 0.0
 
-        # Calculate minimum guesses needed (total categories - 1, since last is auto-completed)
         total_categories = len(info["categories"])
         min_guesses_needed = total_categories - 1
 
         if min_guesses_needed == 0:
             return 1.0  # Edge case: if only 1 category total
 
-        # Efficiency: minimum needed / actual guesses taken
+        # For winning games, the last guess in history is the auto-complete
+        # We need to exclude it from the efficiency calculation
+        actual_guesses = len(guess_history)
+        if categories == total_categories:
+            # All categories found - last guess was auto-completed
+            actual_guesses = len(guess_history) - 1
+
+        if actual_guesses == 0:
+            return 1.0  # Edge case protection
+
+        # Efficiency: minimum needed / actual manual guesses
         # Fewer guesses = higher efficiency
-        efficiency = min_guesses_needed / len(guess_history)
+        efficiency = min_guesses_needed / actual_guesses
         return min(efficiency, 1.0)  # Cap at 1.0 for perfect efficiency
 
     def attempted_theme_guessing(self, completion, answer, state, info) -> float:

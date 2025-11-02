@@ -4,20 +4,20 @@ Shared utility functions for theme matching in Connections game.
 
 
 def is_theme_match(
-    actual_theme: str, guessed_theme: str, linking_terms: list[str]
+    actual_theme: str, guessed_theme: str | None, linking_terms: list[str]
 ) -> bool:
     """
     Check if a guessed theme matches the actual theme using linking terms for flexibility.
 
     Args:
         actual_theme: The correct theme from the dataset
-        guessed_theme: The user's guess
+        guessed_theme: The user's guess (None if no guess provided)
         linking_terms: List of linking words/phrases that should also count as correct
 
     Returns:
         True if the guess matches the theme or any linking terms
     """
-    if not guessed_theme or guessed_theme.lower().strip() == "no guess":
+    if not guessed_theme:
         return False
 
     # Clean up strings for comparison
