@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.2.0] - Adding PuzzGrid Rules
+## [0.1.1] - Adding PuzzGrid Rules
 
 ### Features
 

@@ -2,7 +2,7 @@
 name = "connections"
 description = "An environment based on the popular puzzle game Connections"
 tags = ["puzzles", "word-games", "text", "game", "multi-turn", "eval", "train", "reasoning"]
-version = "0.1.0"
+version = "0.1.1"
 requires-python = ">=3.11"
 dependencies = [
     "verifiers==0.1.6.post0",
