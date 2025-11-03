@@ -56,7 +56,10 @@ class ConnectionsEnv(MultiTurnEnv):
 
         # If no datasets provided, load and prep the default HuggingFace dataset
         if dataset is None:
-            dataset_dict = load_dataset("ericbotti/connections-puzzles")
+            dataset_dict = load_dataset(
+                "ericbotti/connections-puzzles",
+                revision="edfc8c61c34dd6406b663b9c19213fb271f8ef28",
+            )
             dataset, eval_dataset = prep_dataset(dataset_dict, self.ruleset_config)
         # Otherwise, assume user-provided datasets are already in correct format
 
