@@ -1,14 +1,12 @@
-from datasets import Dataset, DatasetDict
+from datasets import Dataset
 
 from .prompts import generate_game_start_prompt
 from .rulesets import RulesetConfig
 
 
-def prep_dataset(
-    dataset_dict: DatasetDict, ruleset_config: RulesetConfig
-) -> tuple[Dataset, Dataset | None]:
+def prep_dataset(dataset: Dataset, ruleset_config: RulesetConfig) -> Dataset:
     """
-    Internal function to prepare the default HuggingFace dataset for the Connections environment.
+    Internal function to prepare a dataset for the Connections environment.
 
     Converts the raw dataset format:
     - all_words: list of words
@@ -20,10 +18,11 @@ def prep_dataset(
     - info: {categories: list of {group: theme, members: word_list}}
 
     Args:
-        dataset_dict: DatasetDict from HuggingFace with train/test splits
+        dataset: Dataset from HuggingFace
+        ruleset_config: Configuration for the ruleset
 
     Returns:
-        tuple[Dataset, Dataset | None]: (train_dataset, eval_dataset)
+        Dataset: Formatted dataset
     """
 
     def format_dataset(example):
@@ -73,19 +72,4 @@ def prep_dataset(
             "info": {"categories": categories},
         }
 
-    # Extract train and test splits from DatasetDict
-    train_dataset = None
-    eval_dataset = None
-
-    if "train" in dataset_dict:
-        train_dataset = dataset_dict["train"].map(format_dataset, num_proc=1)
-
-    if "test" in dataset_dict:
-        eval_dataset = dataset_dict["test"].map(format_dataset, num_proc=1)
-
-    # If no train split, use the first available split as train
-    if train_dataset is None:
-        first_split = list(dataset_dict.keys())[0]
-        train_dataset = dataset_dict[first_split].map(format_dataset, num_proc=1)
-
-    return train_dataset, eval_dataset
+    return dataset.map(format_dataset, num_proc=1)

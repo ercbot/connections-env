@@ -55,12 +55,14 @@ class ConnectionsEnv(MultiTurnEnv):
         rubric = ConnectionsRubric(parser=parser, ruleset_config=self.ruleset_config)
 
         # If no datasets provided, load and prep the default HuggingFace dataset
-        if dataset is None:
+        if dataset is None or eval_dataset is None:
             dataset_dict = load_dataset(
                 "ericbotti/connections-puzzles",
-                revision="edfc8c61c34dd6406b663b9c19213fb271f8ef28",
             )
-            dataset, eval_dataset = prep_dataset(dataset_dict, self.ruleset_config)
+            if dataset is None:
+                dataset = prep_dataset(dataset_dict["train_rl"], self.ruleset_config)
+            if eval_dataset is None:
+                eval_dataset = prep_dataset(dataset_dict["test"], self.ruleset_config)
         # Otherwise, assume user-provided datasets are already in correct format
 
         # Generate system prompt based on ruleset configuration
