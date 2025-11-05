@@ -69,7 +69,7 @@ def prep_dataset(dataset: Dataset, ruleset_config: RulesetConfig) -> Dataset:
 
         return {
             "question": game_start_prompt,
-            "info": {"categories": categories},
+            "info": {"categories": categories, "puzzle_id": example["puzzle_id"]},
         }
 
     return dataset.map(format_dataset, num_proc=1)
