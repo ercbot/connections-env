@@ -38,12 +38,13 @@ Notes:
 
 ### Environment Arguments
 
-| Arg            | Type            | Default | Description                                              |
-| -------------- | --------------- | ------- | -------------------------------------------------------- |
-| `ruleset`      | str             | `"nyt"` | Game ruleset: `"nyt"` or `"puzzgrid"` (see Rulesets)     |
-| `max_turns`    | int             | `20`    | Maximum number of conversation turns allowed per game    |
-| `dataset`      | Dataset \| None | `None`  | Custom train dataset (if None, loads default HF dataset) |
-| `eval_dataset` | Dataset \| None | `None`  | Custom eval dataset (if None, uses test split from HF)   |
+| Arg           | Type | Default                            | Description                                           |
+| ------------- | ---- | ---------------------------------- | ----------------------------------------------------- |
+| `ruleset`     | str  | `"nyt"`                            | Game ruleset: `"nyt"` or `"puzzgrid"` (see Rulesets)  |
+| `max_turns`   | int  | `20`                               | Maximum number of conversation turns allowed per game |
+| `dataset`     | str  | `"ericbotti/connections-puzzles"`  | HuggingFace dataset name                              |
+| `train_split` | str  | `"train_rl"`                       | Name of the training split to use                     |
+| `test_split`  | str  | `"test"`                           | Name of the test/eval split to use                    |
 
 ### Rulesets
 
@@ -117,4 +118,16 @@ uv run vf-eval connections --model gpt-4o --env-args '{"ruleset": "puzzgrid"}' -
 
 ```bash
 uv run vf-eval connections --model claude-3-5-sonnet --env-args '{"max_turns": 15}' --rollouts 3
+```
+
+**Generate SFT examples from train_sft split:**
+
+```bash
+uv run vf-eval connections --model gpt-4o-mini --env-args '{"test_split": "train_sft"}' --num-examples 500 --rollouts 1
+```
+
+Then filter for good examples:
+
+```bash
+python scripts/filter_good_sft_examples.py <path_to_results.jsonl> outputs/sft_examples.jsonl
 ```
