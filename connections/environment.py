@@ -62,13 +62,17 @@ class ConnectionsEnv(MultiTurnEnv):
         if train_split in dataset_dict:
             train_dataset = prep_dataset(dataset_dict[train_split], self.ruleset_config)
         else:
-            raise ValueError(f"Train split '{train_split}' not found in dataset. Available splits: {list(dataset_dict.keys())}")
+            raise ValueError(
+                f"Train split '{train_split}' not found in dataset. Available splits: {list(dataset_dict.keys())}"
+            )
 
         # Prep test split
         if test_split in dataset_dict:
             eval_dataset = prep_dataset(dataset_dict[test_split], self.ruleset_config)
         else:
-            raise ValueError(f"Test split '{test_split}' not found in dataset. Available splits: {list(dataset_dict.keys())}")
+            raise ValueError(
+                f"Test split '{test_split}' not found in dataset. Available splits: {list(dataset_dict.keys())}"
+            )
 
         # Generate system prompt based on ruleset configuration
         system_prompt = generate_system_prompt(self.ruleset_config)
