@@ -2,7 +2,7 @@ import logging
 from dataclasses import asdict, dataclass
 from typing import Literal, Optional, Tuple
 
-from datasets import load_dataset
+from datasets import Dataset, load_dataset
 from verifiers import MultiTurnEnv
 from verifiers.types import Messages, State
 
@@ -43,7 +43,8 @@ class ConnectionsEnv(MultiTurnEnv):
     def __init__(
         self,
         ruleset: str = "nyt",
-        dataset: str = "ericbotti/connections-puzzles",
+        dataset: str | Dataset = "ericbotti/connections-puzzles",
+        eval_dataset: Dataset | None = None,
         train_split: str = "train_rl",
         test_split: str = "test",
         max_turns: int = 20,
@@ -55,23 +56,36 @@ class ConnectionsEnv(MultiTurnEnv):
         parser: ConnectionsParser = ConnectionsParser()
         rubric = ConnectionsRubric(parser=parser, ruleset_config=self.ruleset_config)
 
-        # Load and prep datasets from HuggingFace
-        dataset_dict = load_dataset(dataset)
+        if isinstance(dataset, str):
+            # Load and prep datasets from HuggingFace
+            dataset_dict = load_dataset(dataset)
 
-        # Prep train split
-        if train_split in dataset_dict:
-            train_dataset = prep_dataset(dataset_dict[train_split], self.ruleset_config)
+            # Prep train split
+            if train_split in dataset_dict:
+                train_dataset = prep_dataset(
+                    dataset_dict[train_split], self.ruleset_config
+                )
+            else:
+                raise ValueError(
+                    f"Train split '{train_split}' not found in dataset. Available splits: {list(dataset_dict.keys())}"
+                )
+
+            # Prep test split
+            if test_split in dataset_dict:
+                eval_dataset = prep_dataset(
+                    dataset_dict[test_split], self.ruleset_config
+                )
+            else:
+                raise ValueError(
+                    f"Test split '{test_split}' not found in dataset. Available splits: {list(dataset_dict.keys())}"
+                )
+        elif isinstance(dataset, Dataset) and isinstance(eval_dataset, Dataset):
+            train_dataset = prep_dataset(dataset, self.ruleset_config)
+            eval_dataset = prep_dataset(eval_dataset, self.ruleset_config)
         else:
             raise ValueError(
-                f"Train split '{train_split}' not found in dataset. Available splits: {list(dataset_dict.keys())}"
-            )
-
-        # Prep test split
-        if test_split in dataset_dict:
-            eval_dataset = prep_dataset(dataset_dict[test_split], self.ruleset_config)
-        else:
-            raise ValueError(
-                f"Test split '{test_split}' not found in dataset. Available splits: {list(dataset_dict.keys())}"
+                "Invalid dataset or eval_dataset type. Must be str or Dataset."
+                f"Got dataset: {type(dataset)}, eval_dataset: {type(eval_dataset)}"
             )
 
         # Generate system prompt based on ruleset configuration
