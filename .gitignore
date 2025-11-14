@@ -8,3 +8,9 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Intermediate data files
+scripts/**/*.jsonl
+scripts/**/*.json
+scripts/*.jsonl
+scripts/*.json
