@@ -12,5 +12,12 @@ wheels/
 # Intermediate data files
 scripts/**/*.jsonl
 scripts/**/*.json
+scripts/**/*.txt
 scripts/*.jsonl
 scripts/*.json
+scripts/**/*.txt
+
+# Output directories
+outputs/
+
+.DS_Store
