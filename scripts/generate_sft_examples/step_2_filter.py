@@ -5,7 +5,7 @@ Filter puzzle rollouts into good and bad examples
 Args:
 - input_file: Path to the results.jsonl file containing the environment rollouts
 
-Process each puzzle in the input file (example_id):
+Process each puzzle in the input file (puzzle_id):
 1. Group all rollouts for this puzzle together
 2. Sort rollouts by quality:
    - Highest reward score
@@ -105,53 +105,6 @@ def select_best_rollout(rollouts: List[Dict[str, Any]], tokenizer) -> Optional[D
     return rollouts_with_metrics[0][0]
 
 
-def wrap_reasoning_in_tags(content: str) -> str:
-    """
-    Wrap all parts of the assistant message before <guess> tags in <think> tags.
-    
-    Example:
-    "Let's think. <guess>[`WORD1`]</guess>" 
-    -> "<think>Let's think.</think>\n\n<guess>[`WORD1`]</guess>"
-    """
-    if "<guess>" not in content:
-        # No guess tag, wrap entire content
-        return f"<think>{content}</think>"
-    
-    # Split on <guess> tag
-    parts = content.split("<guess>", 1)
-    reasoning = parts[0]
-    guess_and_rest = parts[1]
-    
-    # Strip trailing whitespace from reasoning and wrap in redacted_reasoning tags
-    reasoning = reasoning.rstrip()
-    if reasoning:
-        return f"<think>{reasoning}</think>\n\n<guess>{guess_and_rest}"
-    else:
-        return f"<guess>{guess_and_rest}"
-
-
-def process_rollout(result: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Process a rollout by wrapping assistant reasoning in <think> tags.
-
-    Returns a new dict with the processed completion messages.
-    """
-    processed = result.copy()
-    completion = result.get("completion", [])
-
-    processed_completion = []
-    for msg in completion:
-        if msg.get("role") == "assistant":
-            processed_msg = msg.copy()
-            processed_msg["content"] = wrap_reasoning_in_tags(msg["content"])
-            processed_completion.append(processed_msg)
-        else:
-            processed_completion.append(msg)
-
-    processed["completion"] = processed_completion
-    return processed
-
-
 def print_stats_table(good_examples: List[Dict[str, Any]], tokenizer):
     """Print a statistics table for good examples."""
     if not good_examples:
@@ -247,22 +200,22 @@ def main():
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-4b")
 
-    # Group rollouts by example_id
-    print("\nGrouping rollouts by example_id...")
-    rollouts_by_example = defaultdict(list)
+    # Group rollouts by puzzle_id
+    print("\nGrouping rollouts by puzzle_id...")
+    rollouts_by_puzzle = defaultdict(list)
     total_rollouts = 0
 
     with open(input_file, "r") as f:
         for line in f:
             total_rollouts += 1
             result = json.loads(line)
-            example_id = result.get("example_id")
-            if example_id is None:
-                print(f"Warning: Skipping result without example_id")
+            puzzle_id = str(result.get("info", {}).get("puzzle_id", ""))
+            if not puzzle_id:
+                print(f"Warning: Skipping result without puzzle_id")
                 continue
-            rollouts_by_example[example_id].append(result)
+            rollouts_by_puzzle[puzzle_id].append(result)
 
-    print(f"Found {total_rollouts} total rollouts across {len(rollouts_by_example)} unique puzzles")
+    print(f"Found {total_rollouts} total rollouts across {len(rollouts_by_puzzle)} unique puzzles")
 
     # Process each puzzle
     good_examples = []
@@ -275,8 +228,8 @@ def main():
     }
 
     print("\nProcessing puzzles...")
-    for example_id in sorted(rollouts_by_example.keys()):
-        rollouts = rollouts_by_example[example_id]
+    for puzzle_id in sorted(rollouts_by_puzzle.keys()):
+        rollouts = rollouts_by_puzzle[puzzle_id]
 
         # Sort rollouts by quality
         sorted_rollouts = sorted(
@@ -322,6 +275,8 @@ def main():
             best_rollout = sorted_rollouts[0]
             # Process the rollout (add think tags)
             processed = process_rollout(best_rollout)
+            # Add rejection_reason field to bad example
+            processed["rejection_reason"] = rejection_reason
             bad_examples.append(processed)
             # Track the rejection reason
             if rejection_reason:
