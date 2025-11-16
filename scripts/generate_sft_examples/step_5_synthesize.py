@@ -44,11 +44,16 @@ def calculate_accuracy(guess_history: list) -> float:
     return correct_guesses / total_guesses if total_guesses > 0 else 0.0
 
 
-def synthesize_example(example: Dict[str, Any], is_doctored: bool = False) -> Dict[str, Any]:
+def synthesize_example(example: Dict[str, Any], doctoring_type: str = "none") -> Dict[str, Any]:
     """
     Convert an example to the final dataset format.
-    
-    Fields: puzzle_id, prompt, completion, reward, accuracy, guess_history, categories, doctored, complete_reason
+
+    Args:
+        example: Raw example dict
+        doctoring_type: "none", "gameplay", or "tokens"
+
+    Fields: puzzle_id, prompt, completion, reward, accuracy, guess_history, categories,
+            doctored, doctoring_type, complete_reason
     """
     puzzle_id = example.get("info", {}).get("puzzle_id", "unknown")
     prompt = example.get("prompt", [])
@@ -57,9 +62,9 @@ def synthesize_example(example: Dict[str, Any], is_doctored: bool = False) -> Di
     guess_history = example.get("guess_history", [])
     categories = example.get("info", {}).get("categories", [])
     complete_reason = example.get("complete_reason", "unknown")
-    
+
     accuracy = calculate_accuracy(guess_history)
-    
+
     return {
         "puzzle_id": puzzle_id,
         "prompt": prompt,
@@ -68,26 +73,25 @@ def synthesize_example(example: Dict[str, Any], is_doctored: bool = False) -> Di
         "accuracy": accuracy,
         "guess_history": guess_history,
         "categories": categories,  # Preserve for viewer
-        "doctored": is_doctored,
+        "doctored": doctoring_type != "none",  # Boolean for backward compatibility
+        "doctoring_type": doctoring_type,  # "none", "gameplay", or "tokens"
         "complete_reason": complete_reason,  # Preserve for filtering
     }
 
 
 def load_and_synthesize_examples(
     good_examples_file: Path,
-    doctored_examples_file: Path
+    doctored_gameplay_file: Path,
+    doctored_tokens_file: Path
 ) -> List[Dict[str, Any]]:
-    """Load and synthesize examples from both files."""
+    """Load and synthesize examples from all three files."""
     if not good_examples_file.exists():
         print(f"Error: Good examples file {good_examples_file} does not exist")
         sys.exit(1)
 
-    if not doctored_examples_file.exists():
-        print(f"Error: Doctored examples file {doctored_examples_file} does not exist")
-        sys.exit(1)
-
     print(f"Reading good examples from: {good_examples_file}")
-    print(f"Reading doctored examples from: {doctored_examples_file}")
+    print(f"Reading doctored gameplay from: {doctored_gameplay_file}")
+    print(f"Reading doctored tokens from: {doctored_tokens_file}")
     print()
 
     # Read good examples
@@ -99,29 +103,46 @@ def load_and_synthesize_examples(
 
     print(f"Loaded {len(good_examples)} good examples")
 
-    # Read doctored examples
-    doctored_examples = []
-    with open(doctored_examples_file, "r") as f:
-        for line in f:
-            if line.strip():
-                doctored_examples.append(json.loads(line))
+    # Read doctored gameplay examples
+    doctored_gameplay = []
+    if doctored_gameplay_file.exists():
+        with open(doctored_gameplay_file, "r") as f:
+            for line in f:
+                if line.strip():
+                    doctored_gameplay.append(json.loads(line))
+        print(f"Loaded {len(doctored_gameplay)} doctored gameplay examples")
+    else:
+        print(f"Doctored gameplay file not found, skipping")
 
-    print(f"Loaded {len(doctored_examples)} doctored examples")
+    # Read doctored token examples
+    doctored_tokens = []
+    if doctored_tokens_file.exists():
+        with open(doctored_tokens_file, "r") as f:
+            for line in f:
+                if line.strip():
+                    doctored_tokens.append(json.loads(line))
+        print(f"Loaded {len(doctored_tokens)} doctored token examples")
+    else:
+        print(f"Doctored tokens file not found, skipping")
 
     # Combine and synthesize
     print(f"\nSynthesizing final dataset...")
     final_examples = []
 
     for example in good_examples:
-        synthesized = synthesize_example(example, is_doctored=False)
+        synthesized = synthesize_example(example, doctoring_type="none")
         final_examples.append(synthesized)
 
-    for example in doctored_examples:
-        synthesized = synthesize_example(example, is_doctored=True)
+    for example in doctored_gameplay:
+        synthesized = synthesize_example(example, doctoring_type="gameplay")
+        final_examples.append(synthesized)
+
+    for example in doctored_tokens:
+        synthesized = synthesize_example(example, doctoring_type="tokens")
         final_examples.append(synthesized)
 
     print(f"Total examples: {len(final_examples)}")
-    
+
     return final_examples
 
 
@@ -219,11 +240,18 @@ def main():
         help="Path to good_examples.jsonl (default: good_examples.jsonl in current directory)"
     )
     parser.add_argument(
-        "doctored_examples_file",
+        "doctored_gameplay_file",
         type=Path,
         nargs="?",
-        default=Path("doctored_examples.jsonl"),
-        help="Path to doctored_examples.jsonl (default: doctored_examples.jsonl in current directory)"
+        default=Path("doctored_gameplay.jsonl"),
+        help="Path to doctored_gameplay.jsonl (default: doctored_gameplay.jsonl in current directory)"
+    )
+    parser.add_argument(
+        "doctored_tokens_file",
+        type=Path,
+        nargs="?",
+        default=Path("doctored_tokens.jsonl"),
+        help="Path to doctored_tokens.jsonl (default: doctored_tokens.jsonl in current directory)"
     )
     parser.add_argument(
         "output_file",
@@ -234,35 +262,42 @@ def main():
     )
     parser.add_argument("--view", action="store_true", help="Start web server to view results")
     parser.add_argument("--port", type=int, default=8000, help="Port for web server (default: 8000)")
-    
+
     args = parser.parse_args()
-    
+
     good_examples_file = args.good_examples_file
-    doctored_examples_file = args.doctored_examples_file
+    doctored_gameplay_file = args.doctored_gameplay_file
+    doctored_tokens_file = args.doctored_tokens_file
     output_file = args.output_file
 
     # Load and synthesize examples
-    final_examples = load_and_synthesize_examples(good_examples_file, doctored_examples_file)
+    final_examples = load_and_synthesize_examples(
+        good_examples_file,
+        doctored_gameplay_file,
+        doctored_tokens_file
+    )
     
     # Calculate statistics
-    good_count = sum(1 for e in final_examples if not e.get("doctored", False))
-    doctored_count = sum(1 for e in final_examples if e.get("doctored", False))
-    
+    good_count = sum(1 for e in final_examples if e.get("doctoring_type") == "none")
+    doctored_gameplay_count = sum(1 for e in final_examples if e.get("doctoring_type") == "gameplay")
+    doctored_tokens_count = sum(1 for e in final_examples if e.get("doctoring_type") == "tokens")
+
     total_reward = sum(e["reward"] for e in final_examples)
     avg_reward = total_reward / len(final_examples) if final_examples else 0.0
-    
+
     total_accuracy = sum(e["accuracy"] for e in final_examples)
     avg_accuracy = total_accuracy / len(final_examples) if final_examples else 0.0
-    
+
     perfect_accuracy = sum(1 for e in final_examples if e["accuracy"] == 1.0)
-    
+
     # Print statistics
     print(f"\n{'='*60}")
     print("DATASET STATISTICS")
     print(f"{'='*60}")
     print(f"  Total examples: {len(final_examples)}")
-    print(f"  Good examples: {good_count}")
-    print(f"  Doctored examples: {doctored_count}")
+    print(f"  Good examples (undoctored): {good_count}")
+    print(f"  Doctored gameplay: {doctored_gameplay_count}")
+    print(f"  Doctored tokens: {doctored_tokens_count}")
     print(f"  Average reward: {avg_reward:.2f}")
     print(f"  Average accuracy: {avg_accuracy:.2%}")
     print(f"  Perfect accuracy (100%): {perfect_accuracy} ({perfect_accuracy/len(final_examples)*100:.1f}%)")

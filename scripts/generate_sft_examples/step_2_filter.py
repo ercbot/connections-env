@@ -37,6 +37,23 @@ from utils import (
 )
 
 
+def get_num_words_in_puzzle(result: Dict[str, Any]) -> int:
+    """Get the total number of words in the puzzle."""
+    categories = result.get("info", {}).get("categories", [])
+    total_words = sum(len(cat.get("members", [])) for cat in categories)
+    return total_words
+
+
+def get_max_total_tokens_for_puzzle(result: Dict[str, Any]) -> int:
+    """Get the max total tokens limit based on puzzle size."""
+    num_words = get_num_words_in_puzzle(result)
+    if num_words <= 16:
+        return MAX_TOTAL_TOKENS  # 2048 for standard puzzles
+    else:
+        # Dynamic limit for larger puzzles, capped at 3072
+        return min(3072, 128 * num_words)
+
+
 def calculate_avg_assistant_tokens(result: Dict[str, Any], tokenizer) -> float:
     """Calculate the average number of tokens in assistant messages."""
     completion = result.get("completion", [])
@@ -255,8 +272,11 @@ def main():
                 # Calculate token metrics once
                 total_tokens, max_gen_tokens = calculate_token_metrics(processed, tokenizer)
 
+                # Get dynamic token limit based on puzzle size
+                max_total_tokens_for_puzzle = get_max_total_tokens_for_puzzle(rollout)
+
                 # Check token limits
-                if total_tokens > MAX_TOTAL_TOKENS:
+                if total_tokens > max_total_tokens_for_puzzle:
                     if i == 0:  # Only track rejection reason for the best rollout
                         rejection_reason = "Token Limit (Total)"
                 elif max_gen_tokens > MAX_GENERATION_TOKENS:
