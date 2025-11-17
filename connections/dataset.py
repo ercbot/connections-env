@@ -1,3 +1,5 @@
+import random
+
 from datasets import Dataset
 
 from .prompts import generate_game_start_prompt
@@ -51,11 +53,19 @@ def prep_dataset(dataset: Dataset, ruleset_config: RulesetConfig) -> Dataset:
             )
 
         # Extract puzzle data explicitly
-        words = example["all_words"]
+        words = example["all_words"].copy()  # Make a copy to avoid mutating original
         grid_size = example["grid_size"]  # Required field
         num_groups = example["num_groups"]  # Required field
         title = example.get("title")  # Optional
         tags = example.get("tags", [])  # Optional, default to empty list
+        puzzle_id = example.get("puzzle_id")
+
+        # Shuffle words using puzzle_id as seed for deterministic but puzzle-specific ordering
+        # This ensures the same puzzle always shuffles the same way, but different puzzles
+        # get different shuffle patterns (avoiding the issue where all puzzles might
+        # shuffle in the same pattern with a fixed seed)
+        seed = int(puzzle_id)
+        random.Random(seed).shuffle(words)
 
         # Generate game start prompt using extracted data
         game_start_prompt = generate_game_start_prompt(
@@ -69,7 +79,11 @@ def prep_dataset(dataset: Dataset, ruleset_config: RulesetConfig) -> Dataset:
 
         return {
             "question": game_start_prompt,
-            "info": {"categories": categories, "puzzle_id": example["puzzle_id"]},
+            "info": {
+                "categories": categories,
+                "puzzle_id": example["puzzle_id"],
+                "all_words": words,  # Store shuffled word order as list for remaining_words tracking
+            },
         }
 
     return dataset.map(format_dataset, num_proc=1)

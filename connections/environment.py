@@ -43,11 +43,11 @@ class ConnectionsEnv(MultiTurnEnv):
     def __init__(
         self,
         ruleset: str = "nyt",
-        dataset: str | Dataset = "ericbotti/connections-puzzles",
+        dataset: Dataset | None = None,
         eval_dataset: Dataset | None = None,
-        train_split: str = "train_rl",
-        test_split: str = "test",
-        max_turns: int = 20,
+        system_prompt: str | None = None,
+        are_datasets_raw: bool = True,
+        max_turns: int = 10,
         **kwargs,
     ):
         # Get ruleset configuration
@@ -56,43 +56,20 @@ class ConnectionsEnv(MultiTurnEnv):
         parser: ConnectionsParser = ConnectionsParser()
         rubric = ConnectionsRubric(parser=parser, ruleset_config=self.ruleset_config)
 
-        if isinstance(dataset, str):
-            # Load and prep datasets from HuggingFace
-            dataset_dict = load_dataset(dataset)
+        if dataset is None:
+            dataset = load_dataset("ericbotti/connections-puzzles", split="train_rl")
+        if eval_dataset is None:
+            eval_dataset = load_dataset("ericbotti/connections-puzzles", split="test")
 
-            # Prep train split
-            if train_split in dataset_dict:
-                train_dataset = prep_dataset(
-                    dataset_dict[train_split], self.ruleset_config
-                )
-            else:
-                raise ValueError(
-                    f"Train split '{train_split}' not found in dataset. Available splits: {list(dataset_dict.keys())}"
-                )
-
-            # Prep test split
-            if test_split in dataset_dict:
-                eval_dataset = prep_dataset(
-                    dataset_dict[test_split], self.ruleset_config
-                )
-            else:
-                raise ValueError(
-                    f"Test split '{test_split}' not found in dataset. Available splits: {list(dataset_dict.keys())}"
-                )
-        elif isinstance(dataset, Dataset) and isinstance(eval_dataset, Dataset):
-            train_dataset = prep_dataset(dataset, self.ruleset_config)
+        if are_datasets_raw:
+            dataset = prep_dataset(dataset, self.ruleset_config)
             eval_dataset = prep_dataset(eval_dataset, self.ruleset_config)
-        else:
-            raise ValueError(
-                "Invalid dataset or eval_dataset type. Must be str or Dataset."
-                f"Got dataset: {type(dataset)}, eval_dataset: {type(eval_dataset)}"
-            )
 
-        # Generate system prompt based on ruleset configuration
-        system_prompt = generate_system_prompt(self.ruleset_config)
+        # Use provided system prompt or generate one using ruleset configuration
+        system_prompt = system_prompt or generate_system_prompt(self.ruleset_config)
 
         super().__init__(
-            dataset=train_dataset,
+            dataset=dataset,
             eval_dataset=eval_dataset,
             system_prompt=system_prompt,
             parser=parser,
@@ -100,6 +77,76 @@ class ConnectionsEnv(MultiTurnEnv):
             max_turns=max_turns,
             **kwargs,
         )
+
+    async def setup_state(self, state: State, **kwargs) -> State:
+        """
+        Setup state with optional resumption from a previous guess_history.
+
+        If info contains "resumed_from_guess_history", we reconstruct the game state
+        to match where it was when it was truncated, including:
+        - mistakes count
+        - found_categories count
+        - remaining_words list
+        - guess_history list
+
+        This allows us to "resume" a game from a checkpoint for doctoring purposes.
+        """
+        info = state.get("info", {})
+        resumed_history = info.get("resumed_from_guess_history")
+
+        if resumed_history:
+            # Reconstruct state from the resumed guess history
+            categories = info.get("categories", [])
+            all_words = info.get("all_words", [])
+
+            # Initialize base state
+            state["mistakes"] = 0
+            state["found_categories"] = 0
+            state["remaining_words"] = all_words.copy()  # Start with all words
+            state["guess_history"] = []
+
+            # Replay the guess history to reconstruct state
+            for guess_record in resumed_history:
+                status = guess_record.get("status")
+                category_idx = guess_record.get("category_idx")
+
+                # Convert category_idx to int if it's not None (JSON may load as float)
+                if category_idx is not None:
+                    category_idx = int(category_idx)
+
+                # Add to guess history
+                state["guess_history"].append(guess_record)
+
+                if status == "correct":
+                    # Correctly guessed category
+                    state["found_categories"] += 1
+                    if category_idx is not None and category_idx < len(categories):
+                        found_category_words = categories[category_idx]["members"]
+                        # Remove found words from remaining_words, preserving order
+                        found_words_lower = {w.lower() for w in found_category_words}
+                        state["remaining_words"] = [
+                            w
+                            for w in state["remaining_words"]
+                            if w.lower() not in found_words_lower
+                        ]
+                elif status == "incorrect" or status == "one_away":
+                    # Count mistakes based on ruleset configuration
+                    # Use a temporary state dict to call _should_count_mistakes
+                    temp_state = {
+                        "info": info,
+                        "found_categories": state["found_categories"],
+                    }
+                    if self._should_count_mistakes(temp_state):
+                        state["mistakes"] += 1
+                # invalid guesses don't count as mistakes
+
+            logger.info(
+                f"Resumed game state from guess_history: "
+                f"{state['found_categories']} categories found, "
+                f"{state['mistakes']} mistakes"
+            )
+
+        return state
 
     async def is_completed(self, messages: Messages, state: State, **kwargs) -> bool:
         """
@@ -159,6 +206,20 @@ class ConnectionsEnv(MultiTurnEnv):
         ) - state.get("found_categories", 0)
         return remaining_categories <= threshold
 
+    @staticmethod
+    def _words_to_string(words: list[str]) -> str:
+        """
+        Format a list of words as a comma-separated string with backticks, wrapped in square brackets.
+
+        Args:
+            words: List of words to format
+
+        Returns:
+            Formatted string like "[`word1`, `word2`, `word3`]"
+        """
+        formatted = ", ".join(f"`{word}`" for word in words)
+        return f"[{formatted}]"
+
     async def env_response(
         self, messages: Messages, state: State
     ) -> Tuple[Messages, State]:
@@ -173,14 +234,10 @@ class ConnectionsEnv(MultiTurnEnv):
             state["mistakes"] = 0
         if "found_categories" not in state:
             state["found_categories"] = 0
-        if "found_words" not in state:
-            state["found_words"] = set()
-        if "all_words" not in state:
-            # Extract all words from the categories structure with original capitalization
-            all_words = []
-            for category in state["info"]["categories"]:
-                all_words.extend(category["members"])
-            state["all_words"] = set(all_words)
+        if "remaining_words" not in state:
+            # Get shuffled word order from info (stored during dataset prep)
+            all_words = state.get("info", {}).get("all_words", [])
+            state["remaining_words"] = all_words.copy()
         if "guess_history" not in state:
             # Track all guesses with metadata for reward calculation
             state["guess_history"] = []
@@ -235,8 +292,8 @@ class ConnectionsEnv(MultiTurnEnv):
             categories_display = []
             xml_format_display = []
             for i, category in enumerate(state["info"]["categories"], 1):
-                members_str = ", ".join(category["members"])
-                categories_display.append(f"Category {i}: [{members_str}]")
+                members_str = self._words_to_string(category["members"])
+                categories_display.append(f"Category {i}: {members_str}")
                 xml_format_display.append(
                     f"<category_{i}_guess>your theme guess</category_{i}_guess>"
                 )
@@ -299,15 +356,7 @@ class ConnectionsEnv(MultiTurnEnv):
 
             # Validate the guess - check count
             if len(guessed_words) != expected_group_size:
-                found_words_lower_set = {word.lower() for word in state["found_words"]}
-                remaining_words = [
-                    word
-                    for word in state["all_words"]
-                    if word.lower() not in found_words_lower_set
-                ]
-                remaining_words_str = ", ".join(
-                    f"`{word}`" for word in sorted(remaining_words)
-                )
+                remaining_words_str = self._words_to_string(state["remaining_words"])
                 state["last_error"] = (
                     f"Invalid guess, you guessed {len(guessed_words)} words but need exactly {expected_group_size}. "
                     f"This did not cost a mistake, try again.\n"
@@ -319,22 +368,18 @@ class ConnectionsEnv(MultiTurnEnv):
                 return state
 
             # Check if all guessed words are valid (case-insensitive)
-            all_words_lower = {word.lower() for word in state["all_words"]}
+            # Check against all words from categories (not just remaining)
+            all_words_from_categories = set()
+            for category in state["info"]["categories"]:
+                all_words_from_categories.update(category["members"])
+            all_words_lower = {word.lower() for word in all_words_from_categories}
             invalid_words = [
                 word for word in guessed_words if word.lower() not in all_words_lower
             ]
             if invalid_words:
-                found_words_lower_set = {word.lower() for word in state["found_words"]}
-                remaining_words = [
-                    word
-                    for word in state["all_words"]
-                    if word.lower() not in found_words_lower_set
-                ]
                 word_label = "word" if len(invalid_words) == 1 else "words"
-                invalid_words_str = ", ".join(f"`{word}`" for word in invalid_words)
-                remaining_words_str = ", ".join(
-                    f"`{word}`" for word in sorted(remaining_words)
-                )
+                invalid_words_str = self._words_to_string(invalid_words)
+                remaining_words_str = self._words_to_string(state["remaining_words"])
                 state["last_error"] = (
                     f"Invalid guess, the {word_label} {invalid_words_str} {'is' if len(invalid_words) == 1 else 'are'} not in the game. "
                     f"This did not cost a mistake, try again.\n"
@@ -345,27 +390,16 @@ class ConnectionsEnv(MultiTurnEnv):
                 state["guess_history"].append(asdict(guess_record))
                 return state
 
-            # Check if words are already found (case-insensitive)
-            found_words_lower = {word.lower() for word in state["found_words"]}
-            already_found = [
-                word for word in guessed_words if word.lower() in found_words_lower
+            # Check if all words guessed are in remaining_words
+            remaining_words_lower = {word.lower() for word in state["remaining_words"]}
+            words_not_in_remaining_words = [
+                word
+                for word in guessed_words
+                if word.lower() not in remaining_words_lower
             ]
-            if already_found:
-                found_words_lower_set = {word.lower() for word in state["found_words"]}
-                remaining_words = [
-                    word
-                    for word in state["all_words"]
-                    if word.lower() not in found_words_lower_set
-                ]
-                word_label = "word" if len(already_found) == 1 else "words"
-                already_found_str = ", ".join(f"`{word}`" for word in already_found)
-                remaining_words_str = ", ".join(
-                    f"`{word}`" for word in sorted(remaining_words)
-                )
+            if words_not_in_remaining_words:
                 state["last_error"] = (
-                    f"Invalid guess, you've already found the {word_label}: {already_found_str}. "
-                    f"This did not cost a mistake, try again.\n"
-                    f"Remaining words: {remaining_words_str}"
+                    f"Invalid guess, the words {self._words_to_string(words_not_in_remaining_words)} are have already been guessed. This did not cost a mistake, try again."
                 )
                 # Record invalid guess
                 guess_record = GuessRecord(words=guessed_words, status="invalid")
@@ -385,7 +419,14 @@ class ConnectionsEnv(MultiTurnEnv):
             if correct_category:
                 # Correct guess! Store the original capitalized words from the category
                 state["found_categories"] += 1
-                state["found_words"].update(correct_category["members"])
+                found_category_words = correct_category["members"]
+                # Remove found words from remaining_words, preserving order
+                found_words_lower = {w.lower() for w in found_category_words}
+                state["remaining_words"] = [
+                    w
+                    for w in state["remaining_words"]
+                    if w.lower() not in found_words_lower
+                ]
                 state["last_correct_category"] = correct_category
                 state["last_error"] = None
                 # Record valid + correct guess
@@ -399,18 +440,31 @@ class ConnectionsEnv(MultiTurnEnv):
                 # Auto-complete if only 1 category remains
                 if state["found_categories"] == total_categories - 1:
                     # Find the last remaining category
+                    remaining_words_lower = {
+                        word.lower() for word in state["remaining_words"]
+                    }
                     for idx, category in enumerate(state["info"]["categories"]):
                         category_words_lower = {
                             word.lower() for word in category["members"]
                         }
-                        found_words_lower = {
-                            word.lower() for word in state["found_words"]
-                        }
                         # Check if this category hasn't been found yet
-                        if not category_words_lower.intersection(found_words_lower):
+                        # A category is found if ALL its words are NOT in remaining_words
+                        if (
+                            category_words_lower.intersection(remaining_words_lower)
+                            == category_words_lower
+                        ):
                             # Auto-complete this category
                             state["found_categories"] += 1
-                            state["found_words"].update(category["members"])
+                            auto_completed_words = category["members"]
+                            # Remove auto-completed words from remaining_words, preserving order
+                            auto_completed_words_lower = {
+                                w.lower() for w in auto_completed_words
+                            }
+                            state["remaining_words"] = [
+                                w
+                                for w in state["remaining_words"]
+                                if w.lower() not in auto_completed_words_lower
+                            ]
                             state["last_auto_completed_category"] = category
                             # Record auto-completed category
                             auto_guess_record = GuessRecord(
@@ -516,7 +570,8 @@ class ConnectionsEnv(MultiTurnEnv):
             correct_category = state["last_correct_category"]
 
             if self.ruleset_config.reveal_themes_immediately:
-                response = f"Correct! Category {state['found_categories'] - (1 if state.get('last_auto_completed_category') else 0)}/{total_categories} found: {correct_category['group']} - {', '.join(correct_category['members'])}"
+                members_str = self._words_to_string(correct_category["members"])
+                response = f"Correct! Category {state['found_categories'] - (1 if state.get('last_auto_completed_category') else 0)}/{total_categories} found: {correct_category['group']} - {members_str}"
             else:
                 response = f"Correct! Category {state['found_categories'] - (1 if state.get('last_auto_completed_category') else 0)}/{total_categories} found. Theme will be revealed at the end."
 
@@ -524,7 +579,8 @@ class ConnectionsEnv(MultiTurnEnv):
             if state.get("last_auto_completed_category"):
                 auto_cat = state["last_auto_completed_category"]
                 if self.ruleset_config.reveal_themes_immediately:
-                    response += f"\n\nAll categories found! The last category was: {auto_cat['group']} - {', '.join(auto_cat['members'])}"
+                    members_str = self._words_to_string(auto_cat["members"])
+                    response += f"\n\nAll categories found! The last category was: {auto_cat['group']} - {members_str}"
                 else:
                     response += "\n\nAll categories found! The last category has been auto-completed."
                 # Clear the flag
@@ -532,13 +588,7 @@ class ConnectionsEnv(MultiTurnEnv):
 
             # Add remaining words if not all categories found
             elif state["found_categories"] < total_categories:
-                found_words_lower_set = {word.lower() for word in state["found_words"]}
-                remaining_words = [
-                    word
-                    for word in state["all_words"]
-                    if word.lower() not in found_words_lower_set
-                ]
-                remaining_words_str = ", ".join(f"`{word}`" for word in remaining_words)
+                remaining_words_str = self._words_to_string(state["remaining_words"])
                 response += f"\nRemaining words: {remaining_words_str}"
 
             return response
