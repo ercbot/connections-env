@@ -11,13 +11,13 @@ def prep_dataset(dataset: Dataset, ruleset_config: RulesetConfig) -> Dataset:
     Internal function to prepare a dataset for the Connections environment.
 
     Converts the raw dataset format:
-    - all_words: list of words
-    - group_words: list of word lists
+    - all_words: list of items (dataset field name kept for compatibility)
+    - group_words: list of item lists (dataset field name kept for compatibility)
     - group_themes: list of theme descriptions
 
     To the format expected by the environment:
-    - question: formatted starting prompt with words
-    - info: {categories: list of {group: theme, members: word_list}}
+    - question: formatted starting prompt with items
+    - info: {categories: list of {group: theme, members: item_list}}
 
     Args:
         dataset: Dataset from HuggingFace
@@ -53,7 +53,9 @@ def prep_dataset(dataset: Dataset, ruleset_config: RulesetConfig) -> Dataset:
             )
 
         # Extract puzzle data explicitly
-        words = example["all_words"].copy()  # Make a copy to avoid mutating original
+        items = example[
+            "all_words"
+        ].copy()  # Dataset field name is "all_words" but contains items
         grid_size = example["grid_size"]  # Required field
         num_groups = example["num_groups"]  # Required field
         title = example.get("title")  # Optional
@@ -61,16 +63,16 @@ def prep_dataset(dataset: Dataset, ruleset_config: RulesetConfig) -> Dataset:
         puzzle_id = example.get("puzzle_id")
         country = example.get("country")
 
-        # Shuffle words using puzzle_id as seed for deterministic but puzzle-specific ordering
+        # Shuffle items using puzzle_id as seed for deterministic but puzzle-specific ordering
         # This ensures the same puzzle always shuffles the same way, but different puzzles
         # get different shuffle patterns (avoiding the issue where all puzzles might
         # shuffle in the same pattern with a fixed seed)
         seed = int(puzzle_id)
-        random.Random(seed).shuffle(words)
+        random.Random(seed).shuffle(items)
 
         # Generate game start prompt using extracted data
         game_start_prompt = generate_game_start_prompt(
-            words=words,
+            words=items,  # Parameter name kept for compatibility, but contains items
             grid_size=grid_size,
             num_groups=num_groups,
             ruleset_config=ruleset_config,
@@ -84,7 +86,7 @@ def prep_dataset(dataset: Dataset, ruleset_config: RulesetConfig) -> Dataset:
             "info": {
                 "categories": categories,
                 "puzzle_id": example["puzzle_id"],
-                "all_words": words,  # Store shuffled word order as list for remaining_words tracking
+                "all_words": items,  # Dataset field name kept for compatibility, stores shuffled item order
             },
         }
 

@@ -57,16 +57,16 @@ def is_theme_match(
     return False
 
 
-def words_to_string(words: list[str]) -> str:
+def items_to_string(items: list[str]) -> str:
     """
-    Format a list of words as a comma-separated string with backticks, wrapped in square brackets.
+    Format a list of items as a comma-separated string with backticks, wrapped in square brackets.
 
     Args:
-        words: List of words to format
+        items: List of items to format (can be words, phrases, abbreviations, fragments, etc.)
 
     Returns:
-        Formatted string like "[`word1`, `word2`, `word3`]"
+        Formatted string like "[`item1`, `item2`, `item3`]"
     """
-    formatted = ", ".join(f"`{word}`" for word in words)
+    formatted = ", ".join(f"`{item}`" for item in items)
     return f"[{formatted}]"
 

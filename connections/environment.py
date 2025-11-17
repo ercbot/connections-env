@@ -11,7 +11,7 @@ from .parser import ConnectionsParser
 from .prompts import generate_system_prompt
 from .rubric import ConnectionsRubric
 from .rulesets import get_ruleset_config
-from .utils import is_theme_match, words_to_string
+from .utils import is_theme_match, items_to_string
 
 
 @dataclass
@@ -19,13 +19,13 @@ class GuessRecord:
     """Records information about a single guess attempt.
 
     Status meanings:
-    - invalid: Guess failed validation (wrong count, invalid words, or already-found words)
+    - invalid: Guess failed validation (wrong count, invalid items, or already-found items)
     - incorrect: Valid guess but doesn't match any category
-    - one_away: Valid guess that's one word away from matching a category
+    - one_away: Valid guess that's one item away from matching a category
     - correct: Valid guess that exactly matches a category
     """
 
-    words: list[str]  # The words that were guessed
+    items: list[str]  # The items that were guessed
     status: Literal["invalid", "incorrect", "one_away", "correct"]
     category_idx: Optional[int] = (
         None  # Which category (for one_away or correct status)
@@ -86,7 +86,7 @@ class ConnectionsEnv(MultiTurnEnv):
         to match where it was when it was truncated, including:
         - mistakes count
         - found_categories count
-        - remaining_words list
+        - remaining_items list
         - guess_history list
 
         This allows us to "resume" a game from a checkpoint for doctoring purposes.
@@ -97,12 +97,14 @@ class ConnectionsEnv(MultiTurnEnv):
         if resumed_history:
             # Reconstruct state from the resumed guess history
             categories = info.get("categories", [])
-            all_words = info.get("all_words", [])
+            all_items = info.get(
+                "all_words", []
+            )  # Dataset field name kept for compatibility
 
             # Initialize base state
             state["mistakes"] = 0
             state["found_categories"] = 0
-            state["remaining_words"] = all_words.copy()  # Start with all words
+            state["remaining_items"] = all_items.copy()  # Start with all items
             state["guess_history"] = []
 
             # Replay the guess history to reconstruct state
@@ -121,13 +123,15 @@ class ConnectionsEnv(MultiTurnEnv):
                     # Correctly guessed category
                     state["found_categories"] += 1
                     if category_idx is not None and category_idx < len(categories):
-                        found_category_words = categories[category_idx]["members"]
-                        # Remove found words from remaining_words, preserving order
-                        found_words_lower = {w.lower() for w in found_category_words}
-                        state["remaining_words"] = [
-                            w
-                            for w in state["remaining_words"]
-                            if w.lower() not in found_words_lower
+                        found_category_items = categories[category_idx]["members"]
+                        # Remove found items from remaining_items, preserving order
+                        found_items_lower = {
+                            item.lower() for item in found_category_items
+                        }
+                        state["remaining_items"] = [
+                            item
+                            for item in state["remaining_items"]
+                            if item.lower() not in found_items_lower
                         ]
                 elif status == "incorrect" or status == "one_away":
                     # Count mistakes based on ruleset configuration
@@ -220,10 +224,12 @@ class ConnectionsEnv(MultiTurnEnv):
             state["mistakes"] = 0
         if "found_categories" not in state:
             state["found_categories"] = 0
-        if "remaining_words" not in state:
-            # Get shuffled word order from info (stored during dataset prep)
-            all_words = state.get("info", {}).get("all_words", [])
-            state["remaining_words"] = all_words.copy()
+        if "remaining_items" not in state:
+            # Get shuffled item order from info (stored during dataset prep)
+            all_items = state.get("info", {}).get(
+                "all_words", []
+            )  # Dataset field name kept for compatibility
+            state["remaining_items"] = all_items.copy()
         if "guess_history" not in state:
             # Track all guesses with metadata for reward calculation
             state["guess_history"] = []
@@ -245,12 +251,12 @@ class ConnectionsEnv(MultiTurnEnv):
         mistakes = state.get("mistakes", 0)
         found_categories = state.get("found_categories", 0)
 
-        # Still in word guessing phase
+        # Still in item guessing phase
         if (
             mistakes < self.ruleset_config.max_mistakes
             and found_categories < total_categories
         ):
-            response = self._generate_word_phase_response(state)
+            response = self._generate_item_phase_response(state)
             return [{"role": "user", "content": response}], state
 
         # Transition to theme guessing phase
@@ -278,7 +284,7 @@ class ConnectionsEnv(MultiTurnEnv):
             categories_display = []
             xml_format_display = []
             for i, category in enumerate(state["info"]["categories"], 1):
-                members_str = words_to_string(category["members"])
+                members_str = items_to_string(category["members"])
                 categories_display.append(f"Category {i}: {members_str}")
                 xml_format_display.append(
                     f"<category_{i}_guess>your theme guess</category_{i}_guess>"
@@ -290,7 +296,7 @@ class ConnectionsEnv(MultiTurnEnv):
             return [
                 {
                     "role": "user",
-                    "content": f"🎉 Word guessing complete! Now guess the themes for bonus points:\n\n{categories_text}\n\nPlease guess the theme for each category using this format:\n\n{xml_format_text}",
+                    "content": f"🎉 Item guessing complete! Now guess the themes for bonus points:\n\n{categories_text}\n\nPlease guess the theme for each category using this format:\n\n{xml_format_text}",
                 }
             ], state
 
@@ -309,27 +315,27 @@ class ConnectionsEnv(MultiTurnEnv):
         """
         total_categories = len(state["info"]["categories"])
 
-        # Determine if we're in word phase or theme phase
-        currently_in_word_phase = (
+        # Determine if we're in item phase or theme phase
+        currently_in_item_phase = (
             state.get("mistakes", 0) < self.ruleset_config.max_mistakes
             and state.get("found_categories", 0) < total_categories
         )
         currently_in_theme_phase = "theme_guessing_started" in state
 
         # ============================================================
-        # WORD GUESSING PHASE
+        # ITEM GUESSING PHASE
         # ============================================================
-        if currently_in_word_phase:
+        if currently_in_item_phase:
             # Parse the AI's guess
             try:
-                guessed_words = self.parser.parse_answer_as_list(last_message_content)
+                guessed_items = self.parser.parse_answer_as_list(last_message_content)
             except Exception as e:
                 # If parsing fails, don't count as mistake - just ask to retry
                 state["last_error"] = (
                     f"Invalid guess format: {str(e)}. This did not cost a mistake, try again."
                 )
                 # Record invalid guess
-                guess_record = GuessRecord(words=[], status="invalid")
+                guess_record = GuessRecord(items=[], status="invalid")
                 state["guess_history"].append(asdict(guess_record))
                 return state
 
@@ -341,54 +347,54 @@ class ConnectionsEnv(MultiTurnEnv):
             )
 
             # Validate the guess - check count
-            if len(guessed_words) != expected_group_size:
-                remaining_words_str = words_to_string(state["remaining_words"])
+            if len(guessed_items) != expected_group_size:
+                remaining_items_str = items_to_string(state["remaining_items"])
                 state["last_error"] = (
-                    f"Invalid guess, you guessed {len(guessed_words)} words but need exactly {expected_group_size}. "
+                    f"Invalid guess, you guessed {len(guessed_items)} items but need exactly {expected_group_size}. "
                     f"This did not cost a mistake, try again.\n"
-                    f"Remaining words: {remaining_words_str}"
+                    f"Remaining items: {remaining_items_str}"
                 )
                 # Record invalid guess
-                guess_record = GuessRecord(words=guessed_words, status="invalid")
+                guess_record = GuessRecord(items=guessed_items, status="invalid")
                 state["guess_history"].append(asdict(guess_record))
                 return state
 
-            # Check if all guessed words are valid (case-insensitive)
-            # Check against all words from categories (not just remaining)
-            all_words_from_categories = set()
+            # Check if all guessed items are valid (case-insensitive)
+            # Check against all items from categories (not just remaining)
+            all_items_from_categories = set()
             for category in state["info"]["categories"]:
-                all_words_from_categories.update(category["members"])
-            all_words_lower = {word.lower() for word in all_words_from_categories}
-            invalid_words = [
-                word for word in guessed_words if word.lower() not in all_words_lower
+                all_items_from_categories.update(category["members"])
+            all_items_lower = {item.lower() for item in all_items_from_categories}
+            invalid_items = [
+                item for item in guessed_items if item.lower() not in all_items_lower
             ]
-            if invalid_words:
-                word_label = "word" if len(invalid_words) == 1 else "words"
-                invalid_words_str = words_to_string(invalid_words)
-                remaining_words_str = words_to_string(state["remaining_words"])
+            if invalid_items:
+                item_label = "item" if len(invalid_items) == 1 else "items"
+                invalid_items_str = items_to_string(invalid_items)
+                remaining_items_str = items_to_string(state["remaining_items"])
                 state["last_error"] = (
-                    f"Invalid guess, the {word_label} {invalid_words_str} {'is' if len(invalid_words) == 1 else 'are'} not in the game. "
+                    f"Invalid guess, the {item_label} {invalid_items_str} {'is' if len(invalid_items) == 1 else 'are'} not in the game. "
                     f"This did not cost a mistake, try again.\n"
-                    f"Remaining words: {remaining_words_str}"
+                    f"Remaining items: {remaining_items_str}"
                 )
                 # Record invalid guess
-                guess_record = GuessRecord(words=guessed_words, status="invalid")
+                guess_record = GuessRecord(items=guessed_items, status="invalid")
                 state["guess_history"].append(asdict(guess_record))
                 return state
 
-            # Check if all words guessed are in remaining_words
-            remaining_words_lower = {word.lower() for word in state["remaining_words"]}
-            words_not_in_remaining_words = [
-                word
-                for word in guessed_words
-                if word.lower() not in remaining_words_lower
+            # Check if all items guessed are in remaining_items
+            remaining_items_lower = {item.lower() for item in state["remaining_items"]}
+            items_not_in_remaining = [
+                item
+                for item in guessed_items
+                if item.lower() not in remaining_items_lower
             ]
-            if words_not_in_remaining_words:
+            if items_not_in_remaining:
                 state["last_error"] = (
-                    f"Invalid guess, the words {words_to_string(words_not_in_remaining_words)} are have already been guessed. This did not cost a mistake, try again."
+                    f"Invalid guess, the items {items_to_string(items_not_in_remaining)} have already been guessed. This did not cost a mistake, try again."
                 )
                 # Record invalid guess
-                guess_record = GuessRecord(words=guessed_words, status="invalid")
+                guess_record = GuessRecord(items=guessed_items, status="invalid")
                 state["guess_history"].append(asdict(guess_record))
                 return state
 
@@ -396,28 +402,28 @@ class ConnectionsEnv(MultiTurnEnv):
             correct_category = None
             correct_category_idx = None
             for idx, category in enumerate(state["info"]["categories"]):
-                category_words = set([word.lower() for word in category["members"]])
-                if set(guessed_words) == category_words:
+                category_items = set([item.lower() for item in category["members"]])
+                if set(guessed_items) == category_items:
                     correct_category = category
                     correct_category_idx = idx
                     break
 
             if correct_category:
-                # Correct guess! Store the original capitalized words from the category
+                # Correct guess! Store the original capitalized items from the category
                 state["found_categories"] += 1
-                found_category_words = correct_category["members"]
-                # Remove found words from remaining_words, preserving order
-                found_words_lower = {w.lower() for w in found_category_words}
-                state["remaining_words"] = [
-                    w
-                    for w in state["remaining_words"]
-                    if w.lower() not in found_words_lower
+                found_category_items = correct_category["members"]
+                # Remove found items from remaining_items, preserving order
+                found_items_lower = {item.lower() for item in found_category_items}
+                state["remaining_items"] = [
+                    item
+                    for item in state["remaining_items"]
+                    if item.lower() not in found_items_lower
                 ]
                 state["last_correct_category"] = correct_category
                 state["last_error"] = None
                 # Record valid + correct guess
                 guess_record = GuessRecord(
-                    words=guessed_words,
+                    items=guessed_items,
                     status="correct",
                     category_idx=correct_category_idx,
                 )
@@ -426,35 +432,35 @@ class ConnectionsEnv(MultiTurnEnv):
                 # Auto-complete if only 1 category remains
                 if state["found_categories"] == total_categories - 1:
                     # Find the last remaining category
-                    remaining_words_lower = {
-                        word.lower() for word in state["remaining_words"]
+                    remaining_items_lower = {
+                        item.lower() for item in state["remaining_items"]
                     }
                     for idx, category in enumerate(state["info"]["categories"]):
-                        category_words_lower = {
-                            word.lower() for word in category["members"]
+                        category_items_lower = {
+                            item.lower() for item in category["members"]
                         }
                         # Check if this category hasn't been found yet
-                        # A category is found if ALL its words are NOT in remaining_words
+                        # A category is found if ALL its items are NOT in remaining_items
                         if (
-                            category_words_lower.intersection(remaining_words_lower)
-                            == category_words_lower
+                            category_items_lower.intersection(remaining_items_lower)
+                            == category_items_lower
                         ):
                             # Auto-complete this category
                             state["found_categories"] += 1
-                            auto_completed_words = category["members"]
-                            # Remove auto-completed words from remaining_words, preserving order
-                            auto_completed_words_lower = {
-                                w.lower() for w in auto_completed_words
+                            auto_completed_items = category["members"]
+                            # Remove auto-completed items from remaining_items, preserving order
+                            auto_completed_items_lower = {
+                                item.lower() for item in auto_completed_items
                             }
-                            state["remaining_words"] = [
-                                w
-                                for w in state["remaining_words"]
-                                if w.lower() not in auto_completed_words_lower
+                            state["remaining_items"] = [
+                                item
+                                for item in state["remaining_items"]
+                                if item.lower() not in auto_completed_items_lower
                             ]
                             state["last_auto_completed_category"] = category
                             # Record auto-completed category
                             auto_guess_record = GuessRecord(
-                                words=category["members"],
+                                items=category["members"],
                                 status="correct",
                                 category_idx=idx,
                             )
@@ -467,7 +473,7 @@ class ConnectionsEnv(MultiTurnEnv):
 
                 # Check for "One Away" if ruleset allows
                 # IMPORTANT: Only count as one_away if it was a VALID guess
-                # (already validated: correct count, all words in game, no already-found words)
+                # (already validated: correct count, all items in game, no already-found items)
                 guess_status = "incorrect"
                 one_away_category_idx = None
 
@@ -475,10 +481,10 @@ class ConnectionsEnv(MultiTurnEnv):
                     max_correct = 0
                     best_category_idx = None
                     for idx, category in enumerate(state["info"]["categories"]):
-                        category_words = set(
-                            [word.lower() for word in category["members"]]
+                        category_items = set(
+                            [item.lower() for item in category["members"]]
                         )
-                        correct_count = len(set(guessed_words) & category_words)
+                        correct_count = len(set(guessed_items) & category_items)
                         if correct_count > max_correct:
                             max_correct = correct_count
                             best_category_idx = idx
@@ -492,7 +498,7 @@ class ConnectionsEnv(MultiTurnEnv):
                 state["last_error"] = None
                 # Record valid but incorrect guess
                 guess_record = GuessRecord(
-                    words=guessed_words,
+                    items=guessed_items,
                     status=guess_status,
                     category_idx=one_away_category_idx,
                 )
@@ -534,9 +540,9 @@ class ConnectionsEnv(MultiTurnEnv):
 
         return state
 
-    def _generate_word_phase_response(self, state: State) -> str:
+    def _generate_item_phase_response(self, state: State) -> str:
         """
-        Generate response text for word guessing phase based on current state.
+        Generate response text for item guessing phase based on current state.
         """
         total_categories = len(state["info"]["categories"])
 
@@ -556,7 +562,7 @@ class ConnectionsEnv(MultiTurnEnv):
             correct_category = state["last_correct_category"]
 
             if self.ruleset_config.reveal_themes_immediately:
-                members_str = words_to_string(correct_category["members"])
+                members_str = items_to_string(correct_category["members"])
                 response = f"Correct! Category {state['found_categories'] - (1 if state.get('last_auto_completed_category') else 0)}/{total_categories} found: {correct_category['group']} - {members_str}"
             else:
                 response = f"Correct! Category {state['found_categories'] - (1 if state.get('last_auto_completed_category') else 0)}/{total_categories} found. Theme will be revealed at the end."
@@ -565,17 +571,17 @@ class ConnectionsEnv(MultiTurnEnv):
             if state.get("last_auto_completed_category"):
                 auto_cat = state["last_auto_completed_category"]
                 if self.ruleset_config.reveal_themes_immediately:
-                    members_str = words_to_string(auto_cat["members"])
+                    members_str = items_to_string(auto_cat["members"])
                     response += f"\n\nAll categories found! The last category was: {auto_cat['group']} - {members_str}"
                 else:
                     response += "\n\nAll categories found! The last category has been auto-completed."
                 # Clear the flag
                 state.pop("last_auto_completed_category", None)
 
-            # Add remaining words if not all categories found
+            # Add remaining items if not all categories found
             elif state["found_categories"] < total_categories:
-                remaining_words_str = words_to_string(state["remaining_words"])
-                response += f"\nRemaining words: {remaining_words_str}"
+                remaining_items_str = items_to_string(state["remaining_items"])
+                response += f"\nRemaining items: {remaining_items_str}"
 
             return response
 

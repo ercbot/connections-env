@@ -96,7 +96,7 @@ class ConnectionsRubric(Rubric):
         if categories == 0:
             return 0.0
 
-        # Count word guesses from guess_history
+        # Count item guesses from guess_history
         guess_history = state.get("guess_history", [])
         if not guess_history:
             return 0.0

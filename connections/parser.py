@@ -2,17 +2,9 @@ import re
 
 from verifiers import XMLParser
 
-connections_round_prompt_template = """\
-The word grid currently looks like so:
-
-{word_grid}
-
-You have {number_of_mistakes} mistakes left.
-"""
-
 
 class ConnectionsParser(XMLParser):
-    """Special implementation of the XMLParser that can parse the answer as a list of words."""
+    """Special implementation of the XMLParser that can parse the answer as a list of items."""
 
     def __init__(self, **kwargs):
         fields = ["guess"]
@@ -43,10 +35,10 @@ class ConnectionsParser(XMLParser):
         if response.startswith("[") and response.endswith("]"):
             response = response[1:-1]  # Remove brackets
 
-        # Extract backticked words (don't split commas inside backticks)
+        # Extract backticked items (don't split commas inside backticks)
         # Match pattern: backticked content (anything between backticks)
         pattern = r"`([^`]+)`"
         matches = re.findall(pattern, response)
 
-        words = [match.lower().strip() for match in matches]
-        return [word for word in words if word]  # Filter out empty strings
+        items = [match.lower().strip() for match in matches]
+        return [item for item in items if item]  # Filter out empty strings
