@@ -40,5 +40,6 @@ class ConnectionsParser(XMLParser):
         pattern = r"`([^`]+)`"
         matches = re.findall(pattern, response)
 
-        items = [match.lower().strip() for match in matches]
+        # Preserve original case for items
+        items = [match.strip() for match in matches]
         return [item for item in items if item]  # Filter out empty strings

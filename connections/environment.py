@@ -313,6 +313,7 @@ class ConnectionsEnv(MultiTurnEnv):
             # Parse the AI's guess
             try:
                 guessed_items = self.parser.parse_answer_as_list(last_message_content)
+                guessed_items_lower = set([item.lower() for item in guessed_items])
             except Exception as e:
                 # If parsing fails, don't count as mistake - just ask to retry
                 state["last_error"] = (
@@ -370,8 +371,8 @@ class ConnectionsEnv(MultiTurnEnv):
             remaining_items_lower = {item.lower() for item in state["remaining_items"]}
             items_not_in_remaining = [
                 item
-                for item in guessed_items
-                if item.lower() not in remaining_items_lower
+                for item in guessed_items_lower
+                if item not in remaining_items_lower
             ]
             if items_not_in_remaining:
                 state["last_error"] = (
@@ -387,7 +388,7 @@ class ConnectionsEnv(MultiTurnEnv):
             correct_category_idx = None
             for idx, category in enumerate(state["info"]["categories"]):
                 category_items = set([item.lower() for item in category["members"]])
-                if set(guessed_items) == category_items:
+                if guessed_items_lower == category_items:
                     correct_category = category
                     correct_category_idx = idx
                     break
@@ -468,7 +469,9 @@ class ConnectionsEnv(MultiTurnEnv):
                         category_items = set(
                             [item.lower() for item in category["members"]]
                         )
-                        correct_count = len(set(guessed_items) & category_items)
+                        correct_count = len(
+                            guessed_items_lower.intersection(category_items)
+                        )
                         if correct_count > max_correct:
                             max_correct = correct_count
                             best_category_idx = idx
@@ -541,19 +544,15 @@ class ConnectionsEnv(MultiTurnEnv):
         # If the last guess was correct
         elif state.get("last_correct_category"):
             correct_category = state["last_correct_category"]
-            found_count = state["found_categories"] - (
-                1 if state.get("last_auto_completed_category") else 0
-            )
+            members_str = items_to_string(correct_category["members"])
+            message = f"Correct! Group members: {members_str}."
 
             if self.ruleset_config.reveal_themes_immediately:
-                members_str = items_to_string(correct_category["members"])
-                results_parts.append(
-                    f"Correct! Category {found_count}/{total_categories} found: {correct_category['group']} - {members_str}"
-                )
+                message += f" Theme: {correct_category['group']}."
             else:
-                results_parts.append(
-                    f"Correct! Category {found_count}/{total_categories} found. Theme will be revealed at the end."
-                )
+                message += " The theme will be revealed at the end of the game."
+
+            results_parts.append(message)
 
             # If last category was auto-completed, add that info
             if state.get("last_auto_completed_category"):
