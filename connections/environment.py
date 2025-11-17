@@ -9,6 +9,7 @@ from verifiers.types import Messages, State
 from .dataset import prep_dataset
 from .parser import ConnectionsParser
 from .prompts import generate_system_prompt
+from .prompts.game_start import current_state_prompt_part
 from .rubric import ConnectionsRubric
 from .rulesets import get_ruleset_config
 from .utils import is_theme_match, items_to_string
@@ -542,52 +543,69 @@ class ConnectionsEnv(MultiTurnEnv):
 
     def _generate_item_phase_response(self, state: State) -> str:
         """
-        Generate response text for item guessing phase based on current state.
+        Generate response text for item grouping phase based on current state.
         """
         total_categories = len(state["info"]["categories"])
+        counting_mistakes = self._should_count_mistakes(state)
 
-        # Format mistake display if needed
-        mistake_display = (
-            f" Mistakes: {state['mistakes']}/{self.ruleset_config.max_mistakes}"
-            if self._should_count_mistakes(state)
-            else ""
-        )
+        # Build the "Results of Your Guess" section
+        results_parts = ["**Results of Your Guess**"]
 
         # If there was an error in the last guess
         if state.get("last_error"):
-            return f"{state['last_error']}{mistake_display}"
+            results_parts.append(state["last_error"])
 
         # If the last guess was correct
-        if state.get("last_correct_category"):
+        elif state.get("last_correct_category"):
             correct_category = state["last_correct_category"]
+            found_count = state["found_categories"] - (
+                1 if state.get("last_auto_completed_category") else 0
+            )
 
             if self.ruleset_config.reveal_themes_immediately:
                 members_str = items_to_string(correct_category["members"])
-                response = f"Correct! Category {state['found_categories'] - (1 if state.get('last_auto_completed_category') else 0)}/{total_categories} found: {correct_category['group']} - {members_str}"
+                results_parts.append(
+                    f"Correct! Category {found_count}/{total_categories} found: {correct_category['group']} - {members_str}"
+                )
             else:
-                response = f"Correct! Category {state['found_categories'] - (1 if state.get('last_auto_completed_category') else 0)}/{total_categories} found. Theme will be revealed at the end."
+                results_parts.append(
+                    f"Correct! Category {found_count}/{total_categories} found. Theme will be revealed at the end."
+                )
 
             # If last category was auto-completed, add that info
             if state.get("last_auto_completed_category"):
                 auto_cat = state["last_auto_completed_category"]
+                results_parts.append("")  # Blank line
                 if self.ruleset_config.reveal_themes_immediately:
                     members_str = items_to_string(auto_cat["members"])
-                    response += f"\n\nAll categories found! The last category was: {auto_cat['group']} - {members_str}"
+                    results_parts.append(
+                        f"All categories found! The last category was: {auto_cat['group']} - {members_str}"
+                    )
                 else:
-                    response += "\n\nAll categories found! The last category has been auto-completed."
+                    results_parts.append(
+                        "All categories found! The last category has been auto-completed."
+                    )
                 # Clear the flag
                 state.pop("last_auto_completed_category", None)
 
-            # Add remaining items if not all categories found
-            elif state["found_categories"] < total_categories:
-                remaining_items_str = items_to_string(state["remaining_items"])
-                response += f"\nRemaining items: {remaining_items_str}"
-
-            return response
-
         # If the last guess was incorrect
-        one_away_msg = "One away! " if state.get("last_one_away") else ""
-        return f"{one_away_msg}Incorrect guess, try again.{mistake_display}"
+        else:
+            one_away_msg = "One away! " if state.get("last_one_away") else ""
+            results_parts.append(f"{one_away_msg}Incorrect guess, try again.")
+
+        # Build the "Current Game State" section using current_state_prompt_part
+        current_state = current_state_prompt_part(
+            found_categories=state["found_categories"],
+            total_categories=total_categories,
+            mistakes=state["mistakes"],
+            max_mistakes=self.ruleset_config.max_mistakes,
+            counting_mistakes=counting_mistakes,
+            items=state["remaining_items"],
+        )
+
+        # Combine both sections
+        response_parts = ["\n".join(results_parts), current_state]
+        return "\n\n".join(response_parts)
 
     def _generate_theme_results_response(self, state: State) -> str:
         """
