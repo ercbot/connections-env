@@ -1,6 +1,7 @@
 """
 Shared utility functions for Connections game.
 """
+
 from dataclasses import dataclass
 from typing import Literal, Optional
 
@@ -105,4 +106,3 @@ class GuessRecord:
     def is_mistake(self) -> bool:
         """Returns True if the guess was a mistake (incorrect or one_away)."""
         return self.status in ("incorrect", "one_away")
-

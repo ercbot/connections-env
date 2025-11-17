@@ -14,7 +14,6 @@ from .rubric import ConnectionsRubric
 from .rulesets import get_ruleset_config
 from .utils import GuessRecord, is_theme_match, items_to_string
 
-
 logger = logging.getLogger(__name__)
 
 
