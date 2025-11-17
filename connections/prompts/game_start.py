@@ -1,23 +1,74 @@
 from ..rulesets import RulesetConfig
 from ..utils import items_to_string
 
+MISTAKES_COUNT_AT_END_TEMPLATE = "Mistakes will start counting when you have {mistakes_count_when_x_categories_remain} or fewer categories remaining. You can then make {max_mistakes} mistakes."
+
+# Puzzle Info Prompt Parts
 TITLE_TEMPLATE = "Title/Hint: {title}"
-
 TAGS_TEMPLATE = "Tags: {tags}"
+COUNTRY_TEMPLATE = "Country of Origin: {country}"
+CATEGORIES_INFO_TEMPLATE = "There are {total_categories} categories containing {expected_group_size} items each."
 
-COUNTRY_TEMPLATE = "Country: {country}"
 
-GROUP_SIZE_INFO = "Groups: {total_categories} groups of {expected_group_size} each"
+def puzzle_info_prompt_part(
+    title: str | None,
+    tags: list[str] | None,
+    country: str | None,
+    total_categories: int,
+    expected_group_size: int,
+) -> str:
+    """Generate puzzle info prompt part, conditionally including title and tags."""
+    puzzle_info_parts = ["**Puzzle Info**"]
 
-MISTAKES_COUNT_AT_END = "Mistakes will start counting when you have {mistakes_count_when_x_categories_remain} or fewer categories remaining. You can then make {max_mistakes} mistakes."
+    if title:
+        puzzle_info_parts.append(TITLE_TEMPLATE.format(title=title))
 
-SEPARATOR = "---"
+    if tags and len(tags) > 0:
+        tags_str = ", ".join(tags)
+        puzzle_info_parts.append(TAGS_TEMPLATE.format(tags=tags_str))
 
-INITIAL_STATE = "You have found 0 Categories"
+    if country:
+        puzzle_info_parts.append(COUNTRY_TEMPLATE.format(country=country))
 
-MISTAKES_INFO = "You have made 0/{max_mistakes}"
+    puzzle_info_parts.append(
+        CATEGORIES_INFO_TEMPLATE.format(
+            total_categories=total_categories,
+            expected_group_size=expected_group_size,
+        )
+    )
 
-REMAINING_ITEMS = "Remaining Items: {items}"
+    return "\n".join(puzzle_info_parts)
+
+
+# Current Game State Prompt Parts
+CATEGORIES_TEMPLATE = "You have found {found_categories}/{total_categories} categories"
+MISTAKES_MADE_TEMPLATE = "You have made {mistakes}/{max_mistakes} mistakes"
+REMAINING_ITEMS_TEMPLATE = "Remaining items: {items_str}"
+
+
+def current_state_prompt_part(
+    found_categories: int,
+    total_categories: int,
+    mistakes: int,
+    max_mistakes: int,
+    counting_mistakes: bool,
+    items: list[str],
+) -> str:
+    """Generate current state prompt based on found categories, mistakes, and remaining items."""
+    current_state_parts = ["**Current Game State**"]
+    current_state_parts.append(
+        CATEGORIES_TEMPLATE.format(
+            found_categories=found_categories, total_categories=total_categories
+        )
+    )
+    if counting_mistakes:
+        current_state_parts.append(
+            MISTAKES_MADE_TEMPLATE.format(mistakes=mistakes, max_mistakes=max_mistakes)
+        )
+    current_state_parts.append(
+        REMAINING_ITEMS_TEMPLATE.format(items_str=items_to_string(items))
+    )
+    return "\n".join(current_state_parts)
 
 
 def generate_game_start_prompt(
@@ -38,9 +89,6 @@ def generate_game_start_prompt(
     if num_groups != total_categories:
         total_categories = num_groups
 
-    # Format the items with backticks and brackets
-    items_str = items_to_string(words)  # words parameter contains items
-
     # Determine if mistakes count right away
     threshold = ruleset_config.mistakes_count_when_x_categories_remain
     mistakes_count_immediately = threshold == "any"
@@ -48,22 +96,12 @@ def generate_game_start_prompt(
     # Build the base prompt
     prompt_parts = []
 
-    # Add title if available
-    if title:
-        prompt_parts.append(TITLE_TEMPLATE.format(title=title))
-
-    # Add tags if available
-    if tags and len(tags) > 0:
-        tags_str = ", ".join(tags)
-        prompt_parts.append(TAGS_TEMPLATE.format(tags=tags_str))
-
-    # Add country if available
-    if country:
-        prompt_parts.append(COUNTRY_TEMPLATE.format(country=country))
-
-    # Add group size info
+    # Add puzzle info
     prompt_parts.append(
-        GROUP_SIZE_INFO.format(
+        puzzle_info_prompt_part(
+            title=title,
+            tags=tags,
+            country=country,
             total_categories=total_categories,
             expected_group_size=expected_group_size,
         )
@@ -72,28 +110,21 @@ def generate_game_start_prompt(
     # Add mistake counting note if mistakes don't count immediately
     if not mistakes_count_immediately:
         prompt_parts.append(
-            MISTAKES_COUNT_AT_END.format(
+            MISTAKES_COUNT_AT_END_TEMPLATE.format(
                 mistakes_count_when_x_categories_remain=threshold,
                 max_mistakes=ruleset_config.max_mistakes,
             )
         )
 
-    # Add separator
-    prompt_parts.append(SEPARATOR)
+    current_state = current_state_prompt_part(
+        0,
+        total_categories,
+        0,
+        ruleset_config.max_mistakes,
+        mistakes_count_immediately,
+        words,
+    )
 
-    # Add game state information
-    game_state_parts = [
-        "",
-        INITIAL_STATE,
-    ]
+    prompt_parts.append(current_state)
 
-    # Only show mistakes info if we're counting mistakes
-    if mistakes_count_immediately:
-        game_state_parts.append(
-            MISTAKES_INFO.format(max_mistakes=ruleset_config.max_mistakes)
-        )
-
-    game_state_parts.append(REMAINING_ITEMS.format(items=items_str))
-    prompt_parts.extend(game_state_parts)
-
-    return "\n".join(prompt_parts)
+    return "\n".join(prompt_parts).strip()
