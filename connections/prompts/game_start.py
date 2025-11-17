@@ -1,6 +1,6 @@
 from ..rulesets import RulesetConfig
 
-TITLE_TEMPLATE = "Puzzle Title: {title}"
+TITLE_TEMPLATE = "Puzzle Title/Hint: {title}"
 
 WORDS_TEMPLATE = "Words: {words}"
 
