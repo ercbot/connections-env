@@ -1,6 +1,6 @@
 import logging
-from dataclasses import asdict, dataclass
-from typing import Literal, Optional, Tuple
+from dataclasses import asdict
+from typing import Tuple
 
 from datasets import Dataset, load_dataset
 from verifiers import MultiTurnEnv
@@ -12,25 +12,7 @@ from .prompts import generate_system_prompt
 from .prompts.game_start import current_state_prompt_part
 from .rubric import ConnectionsRubric
 from .rulesets import get_ruleset_config
-from .utils import is_theme_match, items_to_string
-
-
-@dataclass
-class GuessRecord:
-    """Records information about a single guess attempt.
-
-    Status meanings:
-    - invalid: Guess failed validation (wrong count, invalid items, or already-found items)
-    - incorrect: Valid guess but doesn't match any category
-    - one_away: Valid guess that's one item away from matching a category
-    - correct: Valid guess that exactly matches a category
-    """
-
-    items: list[str]  # The items that were guessed
-    status: Literal["invalid", "incorrect", "one_away", "correct"]
-    category_idx: Optional[int] = (
-        None  # Which category (for one_away or correct status)
-    )
+from .utils import GuessRecord, is_theme_match, items_to_string
 
 
 logger = logging.getLogger(__name__)
@@ -109,19 +91,20 @@ class ConnectionsEnv(MultiTurnEnv):
             state["guess_history"] = []
 
             # Replay the guess history to reconstruct state
-            for guess_record in resumed_history:
-                status = guess_record.get("status")
-                category_idx = guess_record.get("category_idx")
+            for guess_record_dict in resumed_history:
+                category_idx = guess_record_dict.get("category_idx")
 
                 # Convert category_idx to int if it's not None (JSON may load as float)
                 if category_idx is not None:
                     category_idx = int(category_idx)
 
-                # Add to guess history
-                state["guess_history"].append(guess_record)
+                state["guess_history"].append(guess_record_dict)
 
-                if status == "correct":
-                    # Correctly guessed category
+                # Convert dict to GuessRecord for property access and consistency
+                guess_record_obj = GuessRecord(**guess_record_dict)
+
+                if guess_record_obj.is_correct:
+                    # Correctly guessed category (correct or auto)
                     state["found_categories"] += 1
                     if category_idx is not None and category_idx < len(categories):
                         found_category_items = categories[category_idx]["members"]
@@ -134,7 +117,7 @@ class ConnectionsEnv(MultiTurnEnv):
                             for item in state["remaining_items"]
                             if item.lower() not in found_items_lower
                         ]
-                elif status == "incorrect" or status == "one_away":
+                elif guess_record_obj.is_mistake:
                     # Count mistakes based on ruleset configuration
                     # Use a temporary state dict to call _should_count_mistakes
                     temp_state = {
@@ -462,7 +445,7 @@ class ConnectionsEnv(MultiTurnEnv):
                             # Record auto-completed category
                             auto_guess_record = GuessRecord(
                                 items=category["members"],
-                                status="correct",
+                                status="auto",
                                 category_idx=idx,
                             )
                             state["guess_history"].append(asdict(auto_guess_record))

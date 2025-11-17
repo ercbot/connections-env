@@ -1,7 +1,7 @@
 from verifiers import Rubric
 
 from .rulesets import RulesetConfig
-from .utils import is_theme_match
+from .utils import GuessRecord, is_theme_match
 
 
 class ConnectionsRubric(Rubric):
@@ -28,7 +28,7 @@ class ConnectionsRubric(Rubric):
     def valid_guesses(self, completion, answer, state, info) -> float:
         """
         Proportion of guesses that were valid (not invalid status).
-        Valid statuses: correct, incorrect, one_away
+        Valid statuses: correct, auto, incorrect, one_away
         Invalid status: invalid
         """
         guess_history = state.get("guess_history", [])
@@ -48,18 +48,17 @@ class ConnectionsRubric(Rubric):
         """
         guess_history = state.get("guess_history", [])
 
-        # Track which categories were found correctly
+        # Track which categories were found correctly (correct or auto)
         correctly_found_categories = set()
         # Track which categories had one_away guesses
         one_away_categories = set()
 
-        for guess in guess_history:
-            if guess["status"] == "correct" and guess.get("category_idx") is not None:
-                correctly_found_categories.add(guess["category_idx"])
-            elif (
-                guess["status"] == "one_away" and guess.get("category_idx") is not None
-            ):
-                one_away_categories.add(guess["category_idx"])
+        for guess_dict in guess_history:
+            guess = GuessRecord(**guess_dict)
+            if guess.is_correct:
+                correctly_found_categories.add(guess.category_idx)
+            elif guess.is_mistake:
+                one_away_categories.add(guess.category_idx)
 
         # Only reward one_away for categories that were never correctly found
         reward_categories = one_away_categories - correctly_found_categories
@@ -107,12 +106,8 @@ class ConnectionsRubric(Rubric):
         if min_guesses_needed == 0:
             return 1.0  # Edge case: if only 1 category total
 
-        # For winning games, the last guess in history is the auto-complete
-        # We need to exclude it from the efficiency calculation
-        actual_guesses = len(guess_history)
-        if categories == total_categories:
-            # All categories found - last guess was auto-completed
-            actual_guesses = len(guess_history) - 1
+        # For winning games, exclude auto-completed guesses from efficiency calculation
+        actual_guesses = sum(1 for guess in guess_history if guess["status"] != "auto")
 
         if actual_guesses == 0:
             return 1.0  # Edge case protection

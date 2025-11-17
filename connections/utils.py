@@ -1,6 +1,8 @@
 """
 Shared utility functions for Connections game.
 """
+from dataclasses import dataclass
+from typing import Literal, Optional
 
 
 def is_theme_match(
@@ -69,4 +71,38 @@ def items_to_string(items: list[str]) -> str:
     """
     formatted = ", ".join(f"`{item}`" for item in items)
     return f"[{formatted}]"
+
+
+@dataclass
+class GuessRecord:
+    """Records information about a single guess attempt.
+
+    Status meanings:
+    - invalid: Guess failed validation (wrong count, invalid items, or already-found items)
+    - incorrect: Valid guess but doesn't match any category
+    - one_away: Valid guess that's one item away from matching a category
+    - correct: Valid guess that exactly matches a category
+    - auto: Category was auto-completed when only one category remained
+    """
+
+    items: list[str]  # The items that were guessed
+    status: Literal["invalid", "incorrect", "one_away", "correct", "auto"]
+    category_idx: Optional[int] = (
+        None  # Which category (for one_away, correct, or auto status)
+    )
+
+    @property
+    def is_valid(self) -> bool:
+        """Returns True if the guess was valid (not invalid)."""
+        return self.status != "invalid"
+
+    @property
+    def is_correct(self) -> bool:
+        """Returns True if the guess was correct or auto-completed."""
+        return self.status in ("correct", "auto")
+
+    @property
+    def is_mistake(self) -> bool:
+        """Returns True if the guess was a mistake (incorrect or one_away)."""
+        return self.status in ("incorrect", "one_away")
 
