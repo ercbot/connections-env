@@ -59,6 +59,7 @@ def prep_dataset(dataset: Dataset, ruleset_config: RulesetConfig) -> Dataset:
         title = example.get("title")  # Optional
         tags = example.get("tags", [])  # Optional, default to empty list
         puzzle_id = example.get("puzzle_id")
+        country = example.get("country")
 
         # Shuffle words using puzzle_id as seed for deterministic but puzzle-specific ordering
         # This ensures the same puzzle always shuffles the same way, but different puzzles
@@ -75,6 +76,7 @@ def prep_dataset(dataset: Dataset, ruleset_config: RulesetConfig) -> Dataset:
             ruleset_config=ruleset_config,
             title=title,
             tags=tags,
+            country=country,
         )
 
         return {

@@ -6,6 +6,8 @@ WORDS_TEMPLATE = "Words: {words}"
 
 TAGS_TEMPLATE = "Tags: {tags}"
 
+COUNTRY_TEMPLATE = "Country: {country}"
+
 INITIAL_STATE = "You have found 0 categories."
 
 GRID_SIZE_INFO = "Grid size: {grid_size} ({total_categories} groups of {expected_group_size} words each)"
@@ -22,6 +24,7 @@ def generate_game_start_prompt(
     ruleset_config: RulesetConfig,
     title: str | None = None,
     tags: list[str] | None = None,
+    country: str | None = None,
 ) -> str:
     """Generate game start prompt based on ruleset configuration and puzzle specifics."""
 
@@ -62,6 +65,10 @@ def generate_game_start_prompt(
     if tags and len(tags) > 0:
         tags_str = ", ".join(tags)
         prompt_parts.append(TAGS_TEMPLATE.format(tags=tags_str))
+
+    # Add country if available
+    if country:
+        prompt_parts.append(COUNTRY_TEMPLATE.format(country=country))
 
     prompt_parts.extend(
         [
