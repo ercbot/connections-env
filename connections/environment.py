@@ -11,7 +11,7 @@ from .parser import ConnectionsParser
 from .prompts import generate_system_prompt
 from .rubric import ConnectionsRubric
 from .rulesets import get_ruleset_config
-from .theme_matching import is_theme_match
+from .utils import is_theme_match, words_to_string
 
 
 @dataclass
@@ -206,20 +206,6 @@ class ConnectionsEnv(MultiTurnEnv):
         ) - state.get("found_categories", 0)
         return remaining_categories <= threshold
 
-    @staticmethod
-    def _words_to_string(words: list[str]) -> str:
-        """
-        Format a list of words as a comma-separated string with backticks, wrapped in square brackets.
-
-        Args:
-            words: List of words to format
-
-        Returns:
-            Formatted string like "[`word1`, `word2`, `word3`]"
-        """
-        formatted = ", ".join(f"`{word}`" for word in words)
-        return f"[{formatted}]"
-
     async def env_response(
         self, messages: Messages, state: State
     ) -> Tuple[Messages, State]:
@@ -292,7 +278,7 @@ class ConnectionsEnv(MultiTurnEnv):
             categories_display = []
             xml_format_display = []
             for i, category in enumerate(state["info"]["categories"], 1):
-                members_str = self._words_to_string(category["members"])
+                members_str = words_to_string(category["members"])
                 categories_display.append(f"Category {i}: {members_str}")
                 xml_format_display.append(
                     f"<category_{i}_guess>your theme guess</category_{i}_guess>"
@@ -356,7 +342,7 @@ class ConnectionsEnv(MultiTurnEnv):
 
             # Validate the guess - check count
             if len(guessed_words) != expected_group_size:
-                remaining_words_str = self._words_to_string(state["remaining_words"])
+                remaining_words_str = words_to_string(state["remaining_words"])
                 state["last_error"] = (
                     f"Invalid guess, you guessed {len(guessed_words)} words but need exactly {expected_group_size}. "
                     f"This did not cost a mistake, try again.\n"
@@ -378,8 +364,8 @@ class ConnectionsEnv(MultiTurnEnv):
             ]
             if invalid_words:
                 word_label = "word" if len(invalid_words) == 1 else "words"
-                invalid_words_str = self._words_to_string(invalid_words)
-                remaining_words_str = self._words_to_string(state["remaining_words"])
+                invalid_words_str = words_to_string(invalid_words)
+                remaining_words_str = words_to_string(state["remaining_words"])
                 state["last_error"] = (
                     f"Invalid guess, the {word_label} {invalid_words_str} {'is' if len(invalid_words) == 1 else 'are'} not in the game. "
                     f"This did not cost a mistake, try again.\n"
@@ -399,7 +385,7 @@ class ConnectionsEnv(MultiTurnEnv):
             ]
             if words_not_in_remaining_words:
                 state["last_error"] = (
-                    f"Invalid guess, the words {self._words_to_string(words_not_in_remaining_words)} are have already been guessed. This did not cost a mistake, try again."
+                    f"Invalid guess, the words {words_to_string(words_not_in_remaining_words)} are have already been guessed. This did not cost a mistake, try again."
                 )
                 # Record invalid guess
                 guess_record = GuessRecord(words=guessed_words, status="invalid")
@@ -570,7 +556,7 @@ class ConnectionsEnv(MultiTurnEnv):
             correct_category = state["last_correct_category"]
 
             if self.ruleset_config.reveal_themes_immediately:
-                members_str = self._words_to_string(correct_category["members"])
+                members_str = words_to_string(correct_category["members"])
                 response = f"Correct! Category {state['found_categories'] - (1 if state.get('last_auto_completed_category') else 0)}/{total_categories} found: {correct_category['group']} - {members_str}"
             else:
                 response = f"Correct! Category {state['found_categories'] - (1 if state.get('last_auto_completed_category') else 0)}/{total_categories} found. Theme will be revealed at the end."
@@ -579,7 +565,7 @@ class ConnectionsEnv(MultiTurnEnv):
             if state.get("last_auto_completed_category"):
                 auto_cat = state["last_auto_completed_category"]
                 if self.ruleset_config.reveal_themes_immediately:
-                    members_str = self._words_to_string(auto_cat["members"])
+                    members_str = words_to_string(auto_cat["members"])
                     response += f"\n\nAll categories found! The last category was: {auto_cat['group']} - {members_str}"
                 else:
                     response += "\n\nAll categories found! The last category has been auto-completed."
@@ -588,7 +574,7 @@ class ConnectionsEnv(MultiTurnEnv):
 
             # Add remaining words if not all categories found
             elif state["found_categories"] < total_categories:
-                remaining_words_str = self._words_to_string(state["remaining_words"])
+                remaining_words_str = words_to_string(state["remaining_words"])
                 response += f"\nRemaining words: {remaining_words_str}"
 
             return response

@@ -1,7 +1,7 @@
 from verifiers import Rubric
 
 from .rulesets import RulesetConfig
-from .theme_matching import is_theme_match
+from .utils import is_theme_match
 
 
 class ConnectionsRubric(Rubric):

@@ -1,5 +1,5 @@
 """
-Shared utility functions for theme matching in Connections game.
+Shared utility functions for Connections game.
 """
 
 
@@ -55,3 +55,18 @@ def is_theme_match(
             return True
 
     return False
+
+
+def words_to_string(words: list[str]) -> str:
+    """
+    Format a list of words as a comma-separated string with backticks, wrapped in square brackets.
+
+    Args:
+        words: List of words to format
+
+    Returns:
+        Formatted string like "[`word1`, `word2`, `word3`]"
+    """
+    formatted = ", ".join(f"`{word}`" for word in words)
+    return f"[{formatted}]"
+
