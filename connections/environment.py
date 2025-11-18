@@ -315,11 +315,11 @@ class ConnectionsEnv(MultiTurnEnv):
                 guessed_items_lower = set([item.lower() for item in guessed_items])
             except Exception as e:
                 # If parsing fails, don't count as mistake - just ask to retry
-                state["last_error"] = (
-                    f"Invalid guess format: {str(e)}. This did not cost a mistake, try again."
-                )
+                error_msg = f"Invalid guess format: {str(e)}. This did not cost a mistake, try again."
                 # Record invalid guess
-                guess_record = GuessRecord(items=[], status="invalid")
+                guess_record = GuessRecord(
+                    items=[], status="invalid", result_message=error_msg
+                )
                 state["guess_history"].append(asdict(guess_record))
                 return state
 
@@ -332,14 +332,14 @@ class ConnectionsEnv(MultiTurnEnv):
 
             # Validate the guess - check count
             if len(guessed_items) != expected_group_size:
-                remaining_items_str = items_to_string(state["remaining_items"])
-                state["last_error"] = (
+                error_msg = (
                     f"Invalid guess, you guessed {len(guessed_items)} items but need exactly {expected_group_size}. "
                     f"This did not cost a mistake, try again.\n"
-                    f"Remaining items: {remaining_items_str}"
                 )
                 # Record invalid guess
-                guess_record = GuessRecord(items=guessed_items, status="invalid")
+                guess_record = GuessRecord(
+                    items=guessed_items, status="invalid", result_message=error_msg
+                )
                 state["guess_history"].append(asdict(guess_record))
                 return state
 
@@ -355,14 +355,14 @@ class ConnectionsEnv(MultiTurnEnv):
             if invalid_items:
                 item_label = "item" if len(invalid_items) == 1 else "items"
                 invalid_items_str = items_to_string(invalid_items)
-                remaining_items_str = items_to_string(state["remaining_items"])
-                state["last_error"] = (
+                error_msg = (
                     f"Invalid guess, the {item_label} {invalid_items_str} {'is' if len(invalid_items) == 1 else 'are'} not in the game. "
                     f"This did not cost a mistake, try again.\n"
-                    f"Remaining items: {remaining_items_str}"
                 )
                 # Record invalid guess
-                guess_record = GuessRecord(items=guessed_items, status="invalid")
+                guess_record = GuessRecord(
+                    items=guessed_items, status="invalid", result_message=error_msg
+                )
                 state["guess_history"].append(asdict(guess_record))
                 return state
 
@@ -374,11 +374,11 @@ class ConnectionsEnv(MultiTurnEnv):
                 if item not in remaining_items_lower
             ]
             if items_not_in_remaining:
-                state["last_error"] = (
-                    f"Invalid guess, the items {items_to_string(items_not_in_remaining)} have already been guessed. This did not cost a mistake, try again."
-                )
+                error_msg = f"Invalid guess, the items {items_to_string(items_not_in_remaining)} have already been guessed. This did not cost a mistake, try again."
                 # Record invalid guess
-                guess_record = GuessRecord(items=guessed_items, status="invalid")
+                guess_record = GuessRecord(
+                    items=guessed_items, status="invalid", result_message=error_msg
+                )
                 state["guess_history"].append(asdict(guess_record))
                 return state
 
@@ -403,13 +403,21 @@ class ConnectionsEnv(MultiTurnEnv):
                     for item in state["remaining_items"]
                     if item.lower() not in found_items_lower
                 ]
-                state["last_correct_category"] = correct_category
-                state["last_error"] = None
+
+                # Generate result message for correct guess
+                members_str = items_to_string(correct_category["members"])
+                result_msg = f"Correct! Group members: {members_str}."
+                if self.ruleset_config.reveal_themes_immediately:
+                    result_msg += f" Theme: {correct_category['group']}."
+                else:
+                    result_msg += " The theme will be revealed at the end of the game."
+
                 # Record valid + correct guess
                 guess_record = GuessRecord(
                     items=guessed_items,
                     status="correct",
                     category_idx=correct_category_idx,
+                    result_message=result_msg,
                 )
                 state["guess_history"].append(asdict(guess_record))
 
@@ -441,12 +449,20 @@ class ConnectionsEnv(MultiTurnEnv):
                                 for item in state["remaining_items"]
                                 if item.lower() not in auto_completed_items_lower
                             ]
-                            state["last_auto_completed_category"] = category
+
+                            # Generate result message for auto-completed category
+                            if self.ruleset_config.reveal_themes_immediately:
+                                members_str = items_to_string(category["members"])
+                                auto_result_msg = f"All categories found! The last category was: {category['group']} - {members_str}"
+                            else:
+                                auto_result_msg = "All categories found! The last category has been auto-completed."
+
                             # Record auto-completed category
                             auto_guess_record = GuessRecord(
                                 items=category["members"],
                                 status="auto",
                                 category_idx=idx,
+                                result_message=auto_result_msg,
                             )
                             state["guess_history"].append(asdict(auto_guess_record))
                             break
@@ -479,14 +495,18 @@ class ConnectionsEnv(MultiTurnEnv):
                         guess_status = "one_away"
                         one_away_category_idx = best_category_idx
 
-                state["last_one_away"] = guess_status == "one_away"
-                state["last_correct_category"] = None
-                state["last_error"] = None
+                # Generate result message for incorrect guess
+                if guess_status == "one_away":
+                    result_msg = "One away! Incorrect guess, try again."
+                else:
+                    result_msg = "Incorrect guess, try again."
+
                 # Record valid but incorrect guess
                 guess_record = GuessRecord(
                     items=guessed_items,
                     status=guess_status,
                     category_idx=one_away_category_idx,
+                    result_message=result_msg,
                 )
                 state["guess_history"].append(asdict(guess_record))
 
@@ -536,43 +556,28 @@ class ConnectionsEnv(MultiTurnEnv):
         # Build the "Results of Your Guess" section
         results_parts = ["**Results of Your Guess**"]
 
-        # If there was an error in the last guess
-        if state.get("last_error"):
-            results_parts.append(state["last_error"])
+        # Get the last guess from guess_history
+        guess_history = state.get("guess_history", [])
+        if guess_history:
+            last_guess = guess_history[-1]
+            result_message = last_guess.get("result_message", "")
 
-        # If the last guess was correct
-        elif state.get("last_correct_category"):
-            correct_category = state["last_correct_category"]
-            members_str = items_to_string(correct_category["members"])
-            message = f"Correct! Group members: {members_str}."
+            if result_message:
+                results_parts.append(result_message)
 
-            if self.ruleset_config.reveal_themes_immediately:
-                message += f" Theme: {correct_category['group']}."
-            else:
-                message += " The theme will be revealed at the end of the game."
-
-            results_parts.append(message)
-
-            # If last category was auto-completed, add that info
-            if state.get("last_auto_completed_category"):
-                auto_cat = state["last_auto_completed_category"]
-                results_parts.append("")  # Blank line
-                if self.ruleset_config.reveal_themes_immediately:
-                    members_str = items_to_string(auto_cat["members"])
-                    results_parts.append(
-                        f"All categories found! The last category was: {auto_cat['group']} - {members_str}"
-                    )
-                else:
-                    results_parts.append(
-                        "All categories found! The last category has been auto-completed."
-                    )
-                # Clear the flag
-                state.pop("last_auto_completed_category", None)
-
-        # If the last guess was incorrect
-        else:
-            one_away_msg = "One away! " if state.get("last_one_away") else ""
-            results_parts.append(f"{one_away_msg}Incorrect guess, try again.")
+                # If there was an auto-completed category (second-to-last in history),
+                # check if we need to append its message too
+                if len(guess_history) >= 2:
+                    second_last = guess_history[-2]
+                    if (
+                        second_last.get("status") == "correct"
+                        and last_guess.get("status") == "auto"
+                    ):
+                        # The auto-complete message is already in last_guess result_message
+                        # But we need to prepend the correct guess message
+                        correct_msg = second_last.get("result_message", "")
+                        if correct_msg:
+                            results_parts[-1] = f"{correct_msg}\n\n{results_parts[-1]}"
 
         # Build the "Current Game State" section using current_state_prompt_part
         current_state = current_state_prompt_part(

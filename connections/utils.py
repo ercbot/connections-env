@@ -91,6 +91,9 @@ class GuessRecord:
     category_idx: Optional[int] = (
         None  # Which category (for one_away, correct, or auto status)
     )
+    result_message: Optional[str] = (
+        None  # Feedback message for this guess (errors, success messages, etc.)
+    )
 
     @property
     def is_valid(self) -> bool:
