@@ -74,6 +74,35 @@ def items_to_string(items: list[str]) -> str:
     return f"[{formatted}]"
 
 
+def remove_items_one_at_a_time(
+    remaining_items: list[str], items_to_remove: list[str]
+) -> list[str]:
+    """
+    Remove items from remaining_items one instance at a time (case-insensitive).
+
+    If an item appears multiple times in remaining_items, only one instance
+    is removed for each occurrence in items_to_remove.
+
+    Args:
+        remaining_items: List of items to remove from (preserves order)
+        items_to_remove: List of items to remove (case-insensitive matching)
+
+    Returns:
+        New list with items removed (one instance per item)
+    """
+    remaining = remaining_items.copy()
+    items_to_remove_lower = [item.lower() for item in items_to_remove]
+
+    for item_to_remove_lower in items_to_remove_lower:
+        # Find and remove the first matching item (case-insensitive)
+        for i, item in enumerate(remaining):
+            if item.lower() == item_to_remove_lower:
+                remaining.pop(i)
+                break
+
+    return remaining
+
+
 @dataclass
 class GuessRecord:
     """Records information about a single guess attempt.

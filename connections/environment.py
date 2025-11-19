@@ -1,3 +1,7 @@
+"""
+Miscellaneous utilities or helpers for the Connections game environment.
+"""
+
 import logging
 from dataclasses import asdict
 from typing import Tuple
@@ -12,7 +16,12 @@ from .prompts import generate_system_prompt
 from .prompts.game_start import current_state_prompt_part
 from .rubric import ConnectionsRubric
 from .rulesets import get_ruleset_config
-from .utils import GuessRecord, is_theme_match, items_to_string
+from .utils import (
+    GuessRecord,
+    is_theme_match,
+    items_to_string,
+    remove_items_one_at_a_time,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -108,14 +117,10 @@ class ConnectionsEnv(MultiTurnEnv):
                     if category_idx is not None and category_idx < len(categories):
                         found_category_items = categories[category_idx]["members"]
                         # Remove found items from remaining_items, preserving order
-                        found_items_lower = {
-                            item.lower() for item in found_category_items
-                        }
-                        state["remaining_items"] = [
-                            item
-                            for item in state["remaining_items"]
-                            if item.lower() not in found_items_lower
-                        ]
+                        # Only remove one instance of each item
+                        state["remaining_items"] = remove_items_one_at_a_time(
+                            state["remaining_items"], found_category_items
+                        )
                 elif guess_record_obj.is_mistake:
                     # Count mistakes based on ruleset configuration
                     # Use a temporary state dict to call _should_count_mistakes
@@ -397,12 +402,10 @@ class ConnectionsEnv(MultiTurnEnv):
                 state["found_categories"] += 1
                 found_category_items = correct_category["members"]
                 # Remove found items from remaining_items, preserving order
-                found_items_lower = {item.lower() for item in found_category_items}
-                state["remaining_items"] = [
-                    item
-                    for item in state["remaining_items"]
-                    if item.lower() not in found_items_lower
-                ]
+                # Only remove one instance of each item
+                state["remaining_items"] = remove_items_one_at_a_time(
+                    state["remaining_items"], found_category_items
+                )
 
                 # Generate result message for correct guess
                 members_str = items_to_string(correct_category["members"])
@@ -441,14 +444,10 @@ class ConnectionsEnv(MultiTurnEnv):
                             state["found_categories"] += 1
                             auto_completed_items = category["members"]
                             # Remove auto-completed items from remaining_items, preserving order
-                            auto_completed_items_lower = {
-                                item.lower() for item in auto_completed_items
-                            }
-                            state["remaining_items"] = [
-                                item
-                                for item in state["remaining_items"]
-                                if item.lower() not in auto_completed_items_lower
-                            ]
+                            # Only remove one instance of each item
+                            state["remaining_items"] = remove_items_one_at_a_time(
+                                state["remaining_items"], auto_completed_items
+                            )
 
                             # Generate result message for auto-completed category
                             if self.ruleset_config.reveal_themes_immediately:
