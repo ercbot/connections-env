@@ -6,7 +6,6 @@ Generate Examples for Supervised Fine-Tuning
 2. Use the eval function in verifiers to generate examples for supervised fine-tuning
  - load all puzzles in the "train_sft" split
  - run 3 rollouts for each puzzle
- - use "deepseek-chat" model
  - save the "guess_history" and "completion" state columns
 """
 
@@ -23,18 +22,9 @@ from verifiers.utils.eval_utils import save_results
 
 from connections.environment import ConnectionsEnv
 
-
-def create_client():
-    """Create and return an AsyncOpenAI client configured for DeepSeek."""
-
-    api_key = os.getenv("DEEPSEEK_API_KEY")
-    if not api_key:
-        raise ValueError("DEEPSEEK_API_KEY environment variable not set")
-    
-    return AsyncOpenAI(
-        api_key=api_key,
-        base_url="https://api.deepseek.com",
-    )
+# Import shared utilities
+sys.path.insert(0, str(Path(__file__).parent))
+from utils import setup_output_directories, copy_raw_results_to_output, create_client
 
 
 def load_puzzle_ids(file_path):
@@ -53,10 +43,10 @@ async def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "output_dir",
+        "--output-dir",
         type=Path,
-        default=Path("."),
-        help="Directory to save examples (default: current directory)",
+        default=Path("generate_results"),
+        help="Directory to save examples (default: generate_results)",
     )
     parser.add_argument(
         "-r", "--rollouts",
@@ -80,12 +70,21 @@ async def main():
         action="store_true",
         help="Enable verbose logging",
     )
-    
+
+    parser.add_argument(
+        "-m", "--model",
+        type=str,
+        default="deepseek-chat",
+        help="Model to use for rollouts (default: deepseek-chat)",
+    )
     args = parser.parse_args()
     
-    # Resolve output_dir to absolute path for clarity
-    output_dir = args.output_dir.resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
+    # Setup output directories using unified utility
+    output_dir, raw_results_dir, final_output_dir, iteration, output_file = setup_output_directories(
+        base_output_dir=args.output_dir,
+        results_subdir="",  # No subdirectory for step_1
+        filename_pattern="results_{}.jsonl"
+    )
     
     rollouts = args.rollouts
     num_examples = args.num_examples
@@ -110,11 +109,12 @@ async def main():
     
     print(f"Generating SFT examples...")
     print(f"  Output directory: {output_dir}")
+    print(f"  Raw results directory: {raw_results_dir}")
+    print(f"  Iteration: {iteration}")
     print(f"  Rollouts per example: {rollouts}")
     print(f"  Number of examples: {num_examples if num_examples > 0 else 'all'}")
     if puzzle_ids:
         print(f"  Filtering to {len(puzzle_ids)} puzzle IDs")
-    print(f"  Model: deepseek-chat")
     print()
 
     # Load the train_sft dataset
@@ -167,13 +167,13 @@ async def main():
     try:
         results = await vf_env.evaluate(
             client=client,
-            model="deepseek-chat",
+            model=args.model,
             sampling_args={},
             num_examples=num_examples,
             rollouts_per_example=rollouts,
             max_concurrent=32,
             interleave_scoring=True,
-            results_path=output_dir,
+            results_path=raw_results_dir,
             state_columns=["guess_history", "complete_reason"],
             save_every=20,
         )
@@ -191,6 +191,13 @@ async def main():
         sys.exit(1)
 
     save_results(results)
+    
+    # Copy results from raw directory to output directory with iteration number
+    print(f"\nCopying results to {output_file}...")
+    if copy_raw_results_to_output(raw_results_dir, output_file):
+        print(f"✓ Results saved to: {output_file}")
+    else:
+        print(f"⚠ Warning: Raw results file not found at {raw_results_dir / 'results.jsonl'}")
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -1,30 +1,24 @@
 #!/usr/bin/env python3
 """
-Prepare bad examples for doctoring
+Prepare bad examples for gameplay doctoring
 
 Args:
 - input_file: Path to the bad_examples.jsonl file
 
-For each bad example:
-1. Split by rejection_reason into two categories:
-   - Gameplay issues: "Invalid Guess" or "Game Lost"
-   - Token issues: "Token Limit (Total)" or "Token Limit (Generation)"
+For each bad example with gameplay issues:
+1. Only process examples with rejection_reason "Invalid Guess" or "Game Lost"
 
-2. For gameplay issues:
-   - Truncate the example to keep only messages up to and including the last correct guess.
+2. Truncate the example to keep only messages up to and including the last correct guess.
    - Also stops before any invalid guess appears.
-   - Create a doctoring-ready example with a system prompt that instructs which categories to guess:
-     - Preserve the order of categories that were already correctly guessed
-     - Rank remaining categories by difficulty using llm
-     - Create system prompt with instructions for ALL categories in the optimized order
 
-3. For token issues:
-   - Keep the full example as-is (no truncation needed)
-   - These will be processed separately for token reduction
+3. Create a doctoring-ready example with a system prompt that instructs which categories to guess:
+   - Preserve the order of categories that were already correctly guessed
+   - Rank remaining categories by difficulty using llm
+   - Create system prompt with instructions for ALL categories in the optimized order
 
-4. Save to:
-   - doctor_gameplay.jsonl (for gameplay issues)
-   - doctor_tokens.jsonl (for token issues)
+4. Save to doctor_gameplay.jsonl
+
+NOTE: Token reduction is now handled in step_5_reduce_tokens.py
 """
 
 import json
@@ -43,10 +37,8 @@ from utils import (
 )
 
 
-# Rejection reasons that indicate gameplay issues
+# Rejection reasons that indicate gameplay issues (only these are handled in this step)
 GAMEPLAY_REJECTION_REASONS = {"Invalid Guess", "Game Lost"}
-# Rejection reasons that indicate token limit issues
-TOKEN_REJECTION_REASONS = {"Token Limit (Total)", "Token Limit (Generation)"}
 
 
 class CategoryRanking(BaseModel):
@@ -78,13 +70,13 @@ def rank_categories_by_difficulty(
     
     ranking_prompt = f"""You are helping rank Connections puzzle categories by difficulty.
 
-Below are {len(categories)} categories from a Connections puzzle. Your task is to rank them from EASIEST to HARDEST based on how easy it would be for a player to identify the pattern and group the words correctly.
+Below are {len(categories)} categories from a Connections puzzle. Your task is to rank them from EASIEST to HARDEST based on how easy it would be for a player to identify the pattern and group the items correctly.
 
 Consider:
 - How obvious is the pattern/theme?
 - How many potential false connections exist?
 - How specialized is the knowledge required?
-- How tricky or misleading are the words?
+- How tricky or misleading are the items?
 
 {categories_text}
 
@@ -146,38 +138,36 @@ def create_doctoring_system_prompt(
     if not all_categories:
         return base_system_prompt
 
-    # Build category list - distinguish already guessed from to-be-guessed
+    # Build unified category list - all guesses in sequential order
     category_list = []
+    category_list.append("**Make the following guesses in exact order**")
 
-    # Already guessed - show ALL guesses (correct and incorrect)
-    if truncated_guess_history:
-        category_list.append("**Guesses Already Made (for context):**")
-        for i, guess_record in enumerate(truncated_guess_history, start=1):
-            words = guess_record.get("words", [])
-            status = guess_record.get("status")
-            category_idx = guess_record.get("category_idx")
+    # Add all guesses from history (correct and incorrect)
+    for i, guess_record in enumerate(truncated_guess_history, start=1):
+        # Handle both old "words" field and new "items" field for backward compatibility
+        items = guess_record.get("items", guess_record.get("words", []))
+        status = guess_record.get("status")
+        category_idx = guess_record.get("category_idx")
 
-            guess_str = ", ".join(f"`{word}`" for word in words)
+        guess_str = ", ".join(f"`{item}`" for item in items)
 
-            # Determine label based on status
-            if status == "correct" and category_idx is not None and category_idx < len(categories):
-                # Correct guess - show the theme
-                theme = categories[int(category_idx)].get("group", "Unknown")
-                label = f"Theme: {theme}"
-            else:
-                # Incorrect or one_away - show as Red Herring
-                label = "Red Herring"
+        # Determine label based on status
+        if status == "correct" and category_idx is not None and category_idx < len(categories):
+            # Correct guess - show the theme
+            theme = categories[int(category_idx)].get("group", "Unknown")
+            label = f"Theme: {theme}"
+        else:
+            # Incorrect or one_away - show as Red Herring
+            label = "Red Herring"
 
-            category_list.append(f"{i}. <guess>[{guess_str}]</guess>\n   ({label})")
-        category_list.append("")  # Blank line separator
+        category_list.append(f"{i}. <guess>[{guess_str}]</guess>\n   ({label})")
 
-    # Categories to guess next
-    category_list.append("**Categories to Guess Next (in this order):**")
+    # Add remaining categories to guess
     num_already_guessed = len(truncated_guess_history)
     for i, category in enumerate(all_categories, start=num_already_guessed + 1):
         theme = category.get("group", "Unknown")
         members = category.get("members", [])
-        guess_str = ", ".join(f"`{word}`" for word in members)
+        guess_str = ", ".join(f"`{item}`" for item in members)
         category_list.append(f"{i}. <guess>[{guess_str}]</guess>\n   (Theme: {theme})")
 
     categories_text = "\n".join(category_list)
@@ -190,34 +180,31 @@ def create_doctoring_system_prompt(
 You are engaging in a special version of the Connections game environment described above. This special mode is designed to create high-quality training data for supervised fine-tuning (SFT).
 
 ### Instructions
-- The words to guess for each round are provided to you below.
-- Guesses are divided into two groups:
-  1. **Guesses Already Made**: All guesses you made in previous turns (shown for context). These include both correct guesses (with their themes) and incorrect guesses (marked as "Red Herring"). You will NOT be making these guesses again.
-  2. **Categories to Guess Next**: The remaining categories you need to guess going forward, in the exact order specified.
-- You must generate natural, logical reasoning that would lead you to the conclusion that the words belong to the category.
+- The items to guess for each round are provided to you below in a unified list.
+- Make guesses in the exact order specified in the list below.
+- Some guesses may be marked as "Red Herring" (incorrect guesses) - this is intentional and simulates how even correct reasoning can lead to incorrect guesses in these puzzles.
+- You must generate natural, logical reasoning that would lead you to the conclusion that the items belong to the category.
 - Your reasoning should feel authentic and demonstrate genuine problem-solving thought processes.
-- Sometimes the guess given to you will be incorrect - that is okay as it simulates how even correct reasoning can lead to incorrect guesses in these puzzles.
 - Do NOT mention any meta-knowledge like "I was told to guess X" or "The prompt indicates the next guess should be Y"
 - Your thinking should not directly arrive at the conclusion you have been informed of - first consider potential red herrings, alternative groupings, etc.
 
 ### Example Guess
 <think>
-Looking at the remaining words, I can see several potential groupings. At first, I considered whether `WORD1`, `WORD5`, and `WORD7` might go together because they all seem related to movement, but I'm not confident about a fourth word that would complete that category.
+Looking at the remaining items, I can see several potential groupings. At first, I considered whether `ITEM1`, `ITEM5`, and `ITEM7` might go together because they all seem related to movement, but I'm not confident about a fourth item that would complete that category.
 
-I also notice that `WORD2` and `WORD6` could potentially be part of a word pattern or sound-alike category, but again I'm struggling to find the other two members with certainty.
+I also notice that `ITEM2` and `ITEM6` could potentially be part of an item pattern or sound-alike category, but again I'm struggling to find the other two members with certainty.
 
-However, when I look more carefully at `WORD1`, `WORD2`, `WORD3`, and `WORD4`, I notice they share a stronger connection - they all relate to [insert specific reasoning about the actual theme]. This feels like the most cohesive group, even though some of these words could arguably fit other patterns. The connection is clear enough that I'm confident this is the intended category.
+However, when I look more carefully at `ITEM1`, `ITEM2`, `ITEM3`, and `ITEM4`, I notice they share a stronger connection - they all relate to [insert specific reasoning about the actual theme]. This feels like the most cohesive group, even though some of these items could arguably fit other patterns. The connection is clear enough that I'm confident this is the intended category.
 </think>
 
-<guess>[`WORD1`, `WORD2`, `WORD3`, `WORD4`]</guess>
+<guess>[`ITEM1`, `ITEM2`, `ITEM3`, `ITEM4`]</guess>
 
-### Category Guessing Plan:
+### Item Guessing Plan:
 {categories_text}
 
 ### Remember:
-- The "Guesses Already Made" section is for context only - you've already made those guesses in the conversation history above.
-- Focus on the "Categories to Guess Next" section - guess these in the exact order specified.
-- Make exactly one guess per round following the order in "Categories to Guess Next".
+- Make guesses in the exact order specified above.
+- Make exactly one guess per round following the sequential order.
 - Generate natural, logical reasoning for each guess.
 - Use the required <think>...</think> and <guess>...</guess> tag format.
 - Do NOT reference this meta-instruction or the fact that answers are provided.
@@ -230,33 +217,66 @@ However, when I look more carefully at `WORD1`, `WORD2`, `WORD3`, and `WORD4`, I
 
 def create_doctor_ready_example(
     truncated_result: Dict[str, Any],
+    original_guess_history: List[Dict[str, Any]],
     ruleset_config,
     llm_client: Optional[OpenAI] = None
 ) -> Dict[str, Any]:
     """
     Create a doctoring-ready example with a system prompt that instructs which categories to guess.
-    
-    This replaces the system prompt with one that has explicit instructions for ALL categories:
-    1. Categories that were already correctly guessed (in their original order)
-    2. Remaining categories (ranked by LLM from easiest to hardest)
+
+    This replaces the system prompt with one that has explicit instructions for remaining categories.
+    The order is determined by looking at the ORIGINAL (pre-truncation) guess history to preserve
+    the model's natural guessing preferences.
+
+    Args:
+        truncated_result: The truncated rollout result
+        original_guess_history: The ORIGINAL guess history before truncation
+        ruleset_config: Ruleset configuration
+        llm_client: Optional LLM client for ranking (fallback if original history doesn't provide order)
+
+    Strategy:
+    1. Use truncated guess history to determine what was already guessed
+    2. Look at ORIGINAL guess history to see what the model tried to guess next (even if invalid)
+    3. Order remaining categories based on original attempt order
+    4. Only use LLM ranking as fallback if original history doesn't cover all categories
     """
-    # Get categories and guess history
+    # Get categories and truncated guess history
     categories = truncated_result.get("info", {}).get("categories", [])
-    guess_history = truncated_result.get("guess_history", [])
-    
-    # Get categories that were already correctly guessed, in order
-    guessed_categories = get_guessed_categories_in_order(guess_history, categories)
-    
-    # Determine which categories were already found
-    found_indices = get_found_category_indices(guess_history)
-    
-    # Get remaining categories
+    truncated_guess_history = truncated_result.get("guess_history", [])
+
+    # Determine which categories were already found (from truncated history)
+    found_indices = get_found_category_indices(truncated_guess_history)
+
+    # Extract category ordering from ORIGINAL guess history (including invalid/incorrect guesses)
+    # This preserves the model's natural guessing preference
+    attempted_category_order = []
+    seen_categories = set()
+
+    for guess in original_guess_history:
+        category_idx = guess.get("category_idx")
+        status = guess.get("status")
+
+        # For correct guesses, we know the category
+        if status == "correct" and category_idx is not None:
+            cat_idx = int(category_idx)
+            if cat_idx not in seen_categories and cat_idx not in found_indices:
+                attempted_category_order.append(categories[cat_idx])
+                seen_categories.add(cat_idx)
+
+        # For incorrect/one_away guesses with a category_idx, they were trying for that category
+        elif status in ["incorrect", "one_away"] and category_idx is not None:
+            cat_idx = int(category_idx)
+            if cat_idx not in seen_categories and cat_idx not in found_indices:
+                attempted_category_order.append(categories[cat_idx])
+                seen_categories.add(cat_idx)
+
+    # Get any remaining categories not covered by original attempts
     remaining_categories = [
         cat for idx, cat in enumerate(categories)
-        if idx not in found_indices
+        if idx not in found_indices and idx not in seen_categories
     ]
-    
-    # Rank remaining categories by difficulty using llm
+
+    # Rank the remaining categories (not covered by original attempts) using LLM
     if remaining_categories and llm_client:
         try:
             ranked_remaining = rank_categories_by_difficulty(remaining_categories, llm_client)
@@ -264,14 +284,13 @@ def create_doctor_ready_example(
             print(f"Warning: Failed to rank categories, using original order: {e}")
             ranked_remaining = remaining_categories
     else:
-        # No LLM client or no remaining categories, use original order
         ranked_remaining = remaining_categories
-    
-    # Combine: guessed categories (in order) + ranked remaining categories
-    all_categories_in_order = guessed_categories + ranked_remaining
-    
-    # If no categories to guess, return as-is (shouldn't happen for doctoring)
-    if not all_categories_in_order:
+
+    # Combine: attempted order (from original history) + LLM-ranked remaining
+    ranked_remaining = attempted_category_order + ranked_remaining
+
+    # If no remaining categories to guess, return as-is (shouldn't happen for doctoring)
+    if not ranked_remaining:
         return truncated_result
     
     # Get the original prompt and completion (truncated)
@@ -359,12 +378,10 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     gameplay_output = output_dir / "doctor_gameplay.jsonl"
-    tokens_output = output_dir / "doctor_tokens.jsonl"
 
     print(f"Reading from: {input_file}")
     print(f"Output directory: {output_dir}")
     print(f"  Gameplay issues -> {gameplay_output}")
-    print(f"  Token issues -> {tokens_output}")
     print()
 
     # Load bad examples
@@ -376,24 +393,20 @@ def main():
 
     print(f"Loaded {len(bad_examples)} bad examples")
 
-    # Split by rejection reason
+    # Filter for gameplay rejection reasons only
     gameplay_examples = []
-    token_examples = []
-    unknown_examples = []
+    skipped_examples = []
 
     for example in bad_examples:
         rejection_reason = example.get("rejection_reason")
         if rejection_reason in GAMEPLAY_REJECTION_REASONS:
             gameplay_examples.append(example)
-        elif rejection_reason in TOKEN_REJECTION_REASONS:
-            token_examples.append(example)
         else:
-            unknown_examples.append(example)
+            skipped_examples.append(example)
 
     print(f"  Gameplay issues: {len(gameplay_examples)}")
-    print(f"  Token issues: {len(token_examples)}")
-    if unknown_examples:
-        print(f"  Unknown rejection reasons: {len(unknown_examples)}")
+    if skipped_examples:
+        print(f"  Skipped (non-gameplay): {len(skipped_examples)}")
     print()
 
     # Initialize ruleset config
@@ -422,7 +435,13 @@ def main():
             truncated = truncate_processed_rollout(processed_bad_example, original_guess_history)
 
             # Create doctoring-ready example with system prompt instructions
-            doctor_ready = create_doctor_ready_example(truncated, ruleset_config, llm_client)
+            # Pass original_guess_history to preserve the model's natural category ordering
+            doctor_ready = create_doctor_ready_example(
+                truncated,
+                original_guess_history,
+                ruleset_config,
+                llm_client
+            )
             doctor_gameplay_ready.append(doctor_ready)
 
         # Save gameplay results
@@ -431,18 +450,8 @@ def main():
         with open(gameplay_output, "w") as f:
             for example in doctor_gameplay_ready:
                 f.write(json.dumps(example) + "\n")
-
-    # Process token examples (keep as-is, no truncation)
-    if token_examples:
-        print("\nPreparing token doctoring examples...")
-        print(f"  Keeping {len(token_examples)} examples as-is (no truncation needed)")
-
-        # Save token results (unchanged)
-        print(f"\nSaving token results...")
-        print(f"  {len(token_examples)} examples -> {tokens_output}")
-        with open(tokens_output, "w") as f:
-            for example in token_examples:
-                f.write(json.dumps(example) + "\n")
+    else:
+        print("\nNo gameplay examples to process")
 
     print("\nDone!")
 

@@ -1,19 +1,26 @@
 #!/usr/bin/env python3
 """
-Doctor token-limited examples by reducing verbose reasoning.
+Reduce tokens for all examples (good and doctored gameplay) and filter by token limits.
 
-This script loads doctor_tokens.jsonl (examples that won with valid guesses
-but exceeded token limits) and uses DeepSeek to intelligently reduce the token
-count while preserving reasoning quality.
+This script processes good_examples.jsonl and doctored_gameplay.jsonl to:
+1. Check which examples exceed token limits
+2. Use DeepSeek to reduce tokens in examples that exceed limits
+3. Filter out examples that still exceed limits after reduction
+4. Output examples within limits to their respective files
 
 Strategy:
 1. Sort assistant messages by token count (descending)
 2. First pass: Reduce any messages > MAX_GENERATION_TOKENS (1024)
-3. Second pass: If total > MAX_TOTAL_TOKENS (2048), iteratively reduce longest messages
+3. Second pass: If total > MAX_TOTAL_TOKENS, iteratively reduce longest messages
 4. Target: ~80% of limits for safety margin
+
+Args:
+- good_examples_file: Path to good_examples.jsonl (default: good_examples.jsonl)
+- doctored_gameplay_file: Path to doctored_gameplay.jsonl (default: doctored_gameplay.jsonl)
+- --output-dir: Directory to save results (default: current directory)
+- --verbose: Enable verbose output
 """
 
-import asyncio
 import json
 import os
 import sys
@@ -25,7 +32,7 @@ from openai import OpenAI
 # Import shared utilities
 from utils import (
     calculate_token_metrics,
-    MAX_TOTAL_TOKENS,
+    get_max_total_tokens_for_puzzle,
     MAX_GENERATION_TOKENS,
 )
 from token_reduction_prompt import get_token_reduction_prompt
@@ -33,7 +40,7 @@ from token_reduction_prompt import get_token_reduction_prompt
 
 # Target percentages of limits (for safety margin)
 GENERATION_TARGET_PCT = 0.80  # Target 80% of 1024 = ~819 tokens
-TOTAL_TARGET_PCT = 0.80  # Target 80% of 2048 = ~1638 tokens
+TOTAL_TARGET_PCT = 0.80  # Target 80% of max_total (varies by puzzle size)
 
 
 def extract_guess_from_message(content: str) -> str | None:
@@ -179,7 +186,7 @@ def reduce_message_tokens(
         return message_content
 
 
-def doctor_token_limited_example(
+def reduce_example_tokens(
     example: Dict[str, Any],
     tokenizer,
     llm_client: OpenAI,
@@ -188,9 +195,12 @@ def doctor_token_limited_example(
     """
     Reduce tokens in an example that exceeded limits.
 
-    Returns the doctored example with reduced token counts.
+    Returns the example with reduced token counts.
     """
     completion = example.get("completion", [])
+
+    # Get dynamic token limit based on puzzle size
+    max_total_tokens_for_puzzle = get_max_total_tokens_for_puzzle(example)
 
     # Get assistant messages with their indices and token counts
     assistant_messages = []
@@ -241,8 +251,8 @@ def doctor_token_limited_example(
     total_tokens, _ = calculate_token_metrics({"completion": new_completion}, tokenizer)
 
     phase2_reductions = 0
-    if total_tokens > MAX_TOTAL_TOKENS:
-        target_total = int(MAX_TOTAL_TOKENS * TOTAL_TARGET_PCT)
+    if total_tokens > max_total_tokens_for_puzzle:
+        target_total = int(max_total_tokens_for_puzzle * TOTAL_TARGET_PCT)
         reduction_needed = total_tokens - target_total
 
         # Sort again by current token counts (may have changed in phase 1)
@@ -282,25 +292,178 @@ def doctor_token_limited_example(
                 reduction_needed -= actual_reduction
                 msg_data["tokens"] = new_tokens
 
-    # Create doctored example
-    doctored = example.copy()
-    doctored["completion"] = new_completion
+    # Create reduced example
+    reduced_example = example.copy()
+    reduced_example["completion"] = new_completion
 
-    return doctored
+    return reduced_example
+
+
+def process_examples(
+    examples: List[Dict[str, Any]],
+    example_type: str,
+    tokenizer,
+    llm_client: OpenAI,
+    verbose: bool = False
+) -> tuple[List[Dict[str, Any]], Dict[str, int]]:
+    """
+    Process a list of examples, reducing tokens where needed and filtering by limits.
+
+    Returns:
+        (examples_within_limits, rejection_counts)
+    """
+    print(f"\nProcessing {example_type} examples...")
+    print(f"  Total examples: {len(examples)}")
+
+    examples_within_limits = []
+    rejection_counts = {
+        "Token Limit (Total)": 0,
+        "Token Limit (Generation)": 0,
+    }
+
+    for i, example in enumerate(examples):
+        # Check current token metrics
+        total_tokens, max_gen_tokens = calculate_token_metrics(example, tokenizer)
+        max_total_tokens_for_puzzle = get_max_total_tokens_for_puzzle(example)
+
+        # Check if reduction needed
+        needs_reduction = (
+            total_tokens > max_total_tokens_for_puzzle or
+            max_gen_tokens > MAX_GENERATION_TOKENS
+        )
+
+        if needs_reduction:
+            if verbose or (i + 1) % 10 == 0:
+                print(f"  Example {i + 1}/{len(examples)}: Reducing tokens...")
+
+            # Reduce tokens
+            reduced_example = reduce_example_tokens(example, tokenizer, llm_client, verbose=verbose)
+
+            # Check if now within limits
+            new_total, new_max_gen = calculate_token_metrics(reduced_example, tokenizer)
+
+            within_total_limit = new_total <= max_total_tokens_for_puzzle
+            within_gen_limit = new_max_gen <= MAX_GENERATION_TOKENS
+
+            if within_total_limit and within_gen_limit:
+                examples_within_limits.append(reduced_example)
+                if verbose:
+                    print(f"    ✓ Success: {total_tokens}→{new_total} total, {max_gen_tokens}→{new_max_gen} gen")
+            else:
+                # Still exceeds limits after reduction
+                if not within_total_limit:
+                    rejection_counts["Token Limit (Total)"] += 1
+                    if verbose:
+                        print(f"    ✗ Failed (total): {total_tokens}→{new_total} (limit: {max_total_tokens_for_puzzle})")
+                if not within_gen_limit:
+                    rejection_counts["Token Limit (Generation)"] += 1
+                    if verbose:
+                        print(f"    ✗ Failed (gen): {max_gen_tokens}→{new_max_gen} (limit: {MAX_GENERATION_TOKENS})")
+        else:
+            # Already within limits
+            examples_within_limits.append(example)
+
+    print(f"  Examples within limits: {len(examples_within_limits)}/{len(examples)}")
+
+    return examples_within_limits, rejection_counts
+
+
+def print_rejection_table(rejection_counts: Dict[str, int]):
+    """Print a table showing rejection counts."""
+    total_rejected = sum(rejection_counts.values())
+
+    if total_rejected == 0:
+        print("\n" + "=" * 80)
+        print("TOKEN LIMIT REJECTIONS")
+        print("=" * 80)
+        print("All examples are within token limits!")
+        print("=" * 80)
+        return
+
+    print("\n" + "=" * 80)
+    print(f"TOKEN LIMIT REJECTIONS (N = {total_rejected})")
+    print("=" * 80)
+    print(f"{'Rejection Reason':<40} {'Count':<15} {'Percentage':<15}")
+    print("-" * 80)
+
+    for reason in ["Token Limit (Total)", "Token Limit (Generation)"]:
+        count = rejection_counts.get(reason, 0)
+        percentage = (count / total_rejected) if total_rejected > 0 else 0.0
+        print(f"{reason:<40} {count:<15,} {percentage:<15.1%}")
+
+    print("=" * 80)
+
+
+def load_and_combine_doctored_examples(output_dir: Path) -> List[Dict[str, Any]]:
+    """
+    Load and combine all doctored examples from doctor_results/ directory.
+
+    Automatically finds all doctored_examples_N.jsonl files, combines them,
+    and deduplicates by puzzle_id (keeping highest reward).
+    """
+    doctor_results_dir = output_dir / "doctor_results"
+
+    if not doctor_results_dir.exists():
+        print(f"\nWarning: doctor_results directory not found at {doctor_results_dir}")
+        print("Skipping doctored examples")
+        return []
+
+    # Find all doctored_examples_N.jsonl files
+    doctored_files = sorted(doctor_results_dir.glob("doctored_examples_*.jsonl"))
+
+    if not doctored_files:
+        print(f"\nWarning: No doctored_examples_*.jsonl files found in {doctor_results_dir}")
+        print("Skipping doctored examples")
+        return []
+
+    print(f"\nFound {len(doctored_files)} doctoring iteration(s):")
+    for f in doctored_files:
+        print(f"  - {f.name}")
+
+    # Load all examples
+    all_examples = []
+    for file_path in doctored_files:
+        with open(file_path, "r") as f:
+            for line in f:
+                if line.strip():
+                    all_examples.append(json.loads(line))
+
+    print(f"  Loaded {len(all_examples)} total examples")
+
+    # Deduplicate by puzzle_id, keeping highest reward
+    by_puzzle = {}
+    for example in all_examples:
+        puzzle_id = example.get("info", {}).get("puzzle_id")
+        if not puzzle_id:
+            continue
+
+        if puzzle_id not in by_puzzle:
+            by_puzzle[puzzle_id] = example
+        else:
+            # Keep the one with higher reward
+            if example.get("reward", 0) > by_puzzle[puzzle_id].get("reward", 0):
+                by_puzzle[puzzle_id] = example
+
+    combined = list(by_puzzle.values())
+
+    if len(all_examples) > len(combined):
+        print(f"  Deduplicated to {len(combined)} unique puzzles")
+
+    return combined
 
 
 def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Doctor token-limited examples by reducing verbose reasoning"
+        description="Reduce tokens for all examples and filter by token limits"
     )
     parser.add_argument(
-        "input_file",
+        "good_examples_file",
         type=Path,
         nargs="?",
-        default=Path("doctor_tokens.jsonl"),
-        help="Path to doctor_tokens.jsonl (default: doctor_tokens.jsonl in current directory)"
+        default=Path("good_examples.jsonl"),
+        help="Path to good_examples.jsonl (default: good_examples.jsonl)"
     )
     parser.add_argument(
         "--output-dir",
@@ -315,13 +478,9 @@ def main():
     )
 
     args = parser.parse_args()
-    input_file = args.input_file
+    good_examples_file = args.good_examples_file
     output_dir = args.output_dir
     verbose = args.verbose
-
-    if not input_file.exists():
-        print(f"Error: Input file {input_file} does not exist")
-        sys.exit(1)
 
     # Check for required environment variables
     deepseek_api_key = os.getenv("DEEPSEEK_API_KEY")
@@ -330,10 +489,12 @@ def main():
         sys.exit(1)
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_file = output_dir / "doctored_tokens.jsonl"
+    good_output = output_dir / "good_examples_reduced.jsonl"
+    doctored_output = output_dir / "doctored_gameplay_reduced.jsonl"
 
-    print(f"Doctoring token-limited examples...")
-    print(f"  Input file: {input_file}")
+    print(f"Reducing tokens for all examples...")
+    print(f"  Good examples: {good_examples_file}")
+    print(f"  Doctored gameplay: Automatically loading from {output_dir}/doctor_results/")
     print(f"  Output directory: {output_dir}")
     print(f"  Model: deepseek-chat")
     print()
@@ -348,51 +509,69 @@ def main():
         base_url="https://api.deepseek.com/v1"
     )
 
-    # Load token-limited examples
-    print(f"Loading examples from {input_file}...")
-    token_examples = []
-    with open(input_file, "r") as f:
-        for line in f:
-            if line.strip():
-                token_examples.append(json.loads(line))
+    # Load good examples
+    good_examples = []
+    if good_examples_file.exists():
+        print(f"\nLoading good examples from {good_examples_file}...")
+        with open(good_examples_file, "r") as f:
+            for line in f:
+                if line.strip():
+                    good_examples.append(json.loads(line))
+        print(f"  Loaded {len(good_examples)} good examples")
+    else:
+        print(f"\nWarning: {good_examples_file} not found, skipping good examples")
 
-    print(f"  Loaded {len(token_examples)} token-limited examples")
-    print()
+    # Load and combine doctored gameplay examples from doctor_results/
+    doctored_gameplay = load_and_combine_doctored_examples(output_dir)
 
-    # Doctor each example
-    print("Processing examples...")
-    doctored_examples = []
-    success_count = 0
+    # Process good examples
+    good_within_limits = []
+    good_rejections = {}
+    if good_examples:
+        good_within_limits, good_rejections = process_examples(
+            good_examples,
+            "good",
+            tokenizer,
+            llm_client,
+            verbose=verbose
+        )
 
-    for i, example in enumerate(token_examples):
-        # Check current token metrics
-        total_tokens, max_gen_tokens = calculate_token_metrics(example, tokenizer)
+        # Save good examples within limits
+        print(f"\nSaving good examples to {good_output}...")
+        with open(good_output, "w") as f:
+            for example in good_within_limits:
+                f.write(json.dumps(example) + "\n")
+        print(f"  ✓ Saved {len(good_within_limits)} examples")
 
-        # Doctor the example
-        doctored = doctor_token_limited_example(example, tokenizer, llm_client, verbose=verbose)
-        doctored_examples.append(doctored)
+    # Process doctored gameplay examples
+    doctored_within_limits = []
+    doctored_rejections = {}
+    if doctored_gameplay:
+        doctored_within_limits, doctored_rejections = process_examples(
+            doctored_gameplay,
+            "doctored gameplay",
+            tokenizer,
+            llm_client,
+            verbose=verbose
+        )
 
-        # Verify results
-        new_total, new_max_gen = calculate_token_metrics(doctored, tokenizer)
+        # Save doctored examples within limits
+        print(f"\nSaving doctored gameplay examples to {doctored_output}...")
+        with open(doctored_output, "w") as f:
+            for example in doctored_within_limits:
+                f.write(json.dumps(example) + "\n")
+        print(f"  ✓ Saved {len(doctored_within_limits)} examples")
 
-        within_limits = new_total <= MAX_TOTAL_TOKENS and new_max_gen <= MAX_GENERATION_TOKENS
-        if within_limits:
-            success_count += 1
-            status = "✓"
-        else:
-            status = "✗"
+    # Print combined rejection statistics
+    combined_rejections = {
+        "Token Limit (Total)": good_rejections.get("Token Limit (Total)", 0) + doctored_rejections.get("Token Limit (Total)", 0),
+        "Token Limit (Generation)": good_rejections.get("Token Limit (Generation)", 0) + doctored_rejections.get("Token Limit (Generation)", 0),
+    }
+    print_rejection_table(combined_rejections)
 
-        # Concise progress output
-        print(f"{status} {i + 1}/{len(token_examples)}: {total_tokens}→{new_total} total, {max_gen_tokens}→{new_max_gen} gen")
-
-    # Save results
-    print(f"\nSaving results to {output_file}...")
-    with open(output_file, "w") as f:
-        for example in doctored_examples:
-            f.write(json.dumps(example) + "\n")
-
-    print(f"\n✓ Successfully doctored {len(doctored_examples)} examples ({success_count} within limits)")
-    print(f"  Output: {output_file}")
+    print(f"\n✓ Token reduction complete")
+    print(f"  Good examples: {len(good_within_limits)}/{len(good_examples)} within limits")
+    print(f"  Doctored gameplay: {len(doctored_within_limits)}/{len(doctored_gameplay)} within limits")
 
 
 if __name__ == "__main__":

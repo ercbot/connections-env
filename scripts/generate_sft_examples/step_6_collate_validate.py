@@ -1,14 +1,14 @@
 #!/usr/bin/env uv run
 """
-Synthesize final dataset from good and doctored examples
+Collate and validate final dataset from token-reduced good and doctored examples
 
 Args:
-- good_examples_file: Path to good_examples.jsonl
-- doctored_examples_file: Path to doctored_examples.jsonl
+- good_examples_file: Path to good_examples_reduced.jsonl
+- doctored_gameplay_file: Path to doctored_gameplay_reduced.jsonl
 - output_file: Path to output final dataset
 - --view: Optional flag to start a web server and view results in browser
 
-Combines both files and outputs in final format:
+Combines files and outputs in final format:
 - puzzle_id
 - prompt
 - completion
@@ -17,7 +17,11 @@ Combines both files and outputs in final format:
 - guess_history
 - categories (preserved from info.categories for viewing)
 - doctored (boolean flag indicating if example was doctored)
+- doctoring_type (none or gameplay)
 - complete_reason (preserved for filtering)
+
+NOTE: Token reduction and validation is done in step_5_reduce_tokens.py,
+so all examples here are already within token limits.
 """
 
 import argparse
@@ -28,19 +32,21 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Dict, Any, List
 
+# No shared utility imports needed for this step
+
 
 def calculate_accuracy(guess_history: list) -> float:
     """
     Calculate accuracy as correct_guesses / all_guesses.
-    
+
     Returns 0.0 if no guesses, otherwise the ratio of correct guesses.
     """
     if not guess_history:
         return 0.0
-    
+
     correct_guesses = sum(1 for guess in guess_history if guess.get("status") == "correct")
     total_guesses = len(guess_history)
-    
+
     return correct_guesses / total_guesses if total_guesses > 0 else 0.0
 
 
@@ -82,16 +88,22 @@ def synthesize_example(example: Dict[str, Any], doctoring_type: str = "none") ->
 def load_and_synthesize_examples(
     good_examples_file: Path,
     doctored_gameplay_file: Path,
-    doctored_tokens_file: Path
 ) -> List[Dict[str, Any]]:
-    """Load and synthesize examples from all three files."""
+    """
+    Load and synthesize examples from token-reduced files.
+
+    Returns:
+        final_examples list
+
+    NOTE: No validation needed since all examples are already validated and
+    within token limits from step_5_reduce_tokens.py
+    """
     if not good_examples_file.exists():
         print(f"Error: Good examples file {good_examples_file} does not exist")
         sys.exit(1)
 
     print(f"Reading good examples from: {good_examples_file}")
     print(f"Reading doctored gameplay from: {doctored_gameplay_file}")
-    print(f"Reading doctored tokens from: {doctored_tokens_file}")
     print()
 
     # Read good examples
@@ -114,34 +126,21 @@ def load_and_synthesize_examples(
     else:
         print(f"Doctored gameplay file not found, skipping")
 
-    # Read doctored token examples
-    doctored_tokens = []
-    if doctored_tokens_file.exists():
-        with open(doctored_tokens_file, "r") as f:
-            for line in f:
-                if line.strip():
-                    doctored_tokens.append(json.loads(line))
-        print(f"Loaded {len(doctored_tokens)} doctored token examples")
-    else:
-        print(f"Doctored tokens file not found, skipping")
-
-    # Combine and synthesize
+    # Synthesize (no validation needed - already done in step_5)
     print(f"\nSynthesizing final dataset...")
     final_examples = []
 
+    # Process good examples
     for example in good_examples:
         synthesized = synthesize_example(example, doctoring_type="none")
         final_examples.append(synthesized)
 
+    # Process doctored gameplay examples
     for example in doctored_gameplay:
         synthesized = synthesize_example(example, doctoring_type="gameplay")
         final_examples.append(synthesized)
 
-    for example in doctored_tokens:
-        synthesized = synthesize_example(example, doctoring_type="tokens")
-        final_examples.append(synthesized)
-
-    print(f"Total examples: {len(final_examples)}")
+    print(f"\nTotal examples: {len(final_examples)}")
 
     return final_examples
 
@@ -189,22 +188,22 @@ def create_viewer_html(examples: List[Dict[str, Any]], template_path: Path) -> s
 def start_viewer_server(examples: List[Dict[str, Any]], port: int = 8000):
     """Start a web server to view the synthesized examples."""
     script_dir = Path(__file__).parent
-    template_path = script_dir / "view_sft_examples_template.html"
-    
+    template_path = script_dir / "rollout_viewer.html"
+
     if not template_path.exists():
         print(f"Error: Template file {template_path} does not exist")
         sys.exit(1)
-    
+
     # Create HTML with embedded data
     html_content = create_viewer_html(examples, template_path)
-    
+
     # Create handler class with embedded HTML
     Handler = make_handler(html_content)
-    
+
     # Start server
     server_address = ('', port)
     httpd = HTTPServer(server_address, Handler)
-    
+
     url = f"http://localhost:{port}"
     print(f"\n{'='*60}")
     print("VIEWER SERVER")
@@ -212,14 +211,14 @@ def start_viewer_server(examples: List[Dict[str, Any]], port: int = 8000):
     print(f"Starting server on {url}")
     print("Press Ctrl+C to stop the server")
     print()
-    
+
     # Open browser
     try:
         webbrowser.open(url)
     except Exception as e:
         print(f"Warning: Could not open browser automatically: {e}")
         print(f"Please open {url} manually in your browser")
-    
+
     # Serve forever
     try:
         httpd.serve_forever()
@@ -230,28 +229,21 @@ def start_viewer_server(examples: List[Dict[str, Any]], port: int = 8000):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Synthesize final dataset from good and doctored examples"
+        description="Synthesize and validate final dataset from good and doctored examples"
     )
     parser.add_argument(
         "good_examples_file",
         type=Path,
         nargs="?",
-        default=Path("good_examples.jsonl"),
-        help="Path to good_examples.jsonl (default: good_examples.jsonl in current directory)"
+        default=Path("good_examples_reduced.jsonl"),
+        help="Path to good_examples_reduced.jsonl (default: good_examples_reduced.jsonl in current directory)"
     )
     parser.add_argument(
         "doctored_gameplay_file",
         type=Path,
         nargs="?",
-        default=Path("doctored_gameplay.jsonl"),
-        help="Path to doctored_gameplay.jsonl (default: doctored_gameplay.jsonl in current directory)"
-    )
-    parser.add_argument(
-        "doctored_tokens_file",
-        type=Path,
-        nargs="?",
-        default=Path("doctored_tokens.jsonl"),
-        help="Path to doctored_tokens.jsonl (default: doctored_tokens.jsonl in current directory)"
+        default=Path("doctored_gameplay_reduced.jsonl"),
+        help="Path to doctored_gameplay_reduced.jsonl (default: doctored_gameplay_reduced.jsonl in current directory)"
     )
     parser.add_argument(
         "output_file",
@@ -267,20 +259,17 @@ def main():
 
     good_examples_file = args.good_examples_file
     doctored_gameplay_file = args.doctored_gameplay_file
-    doctored_tokens_file = args.doctored_tokens_file
     output_file = args.output_file
 
     # Load and synthesize examples
     final_examples = load_and_synthesize_examples(
         good_examples_file,
         doctored_gameplay_file,
-        doctored_tokens_file
     )
-    
+
     # Calculate statistics
     good_count = sum(1 for e in final_examples if e.get("doctoring_type") == "none")
     doctored_gameplay_count = sum(1 for e in final_examples if e.get("doctoring_type") == "gameplay")
-    doctored_tokens_count = sum(1 for e in final_examples if e.get("doctoring_type") == "tokens")
 
     total_reward = sum(e["reward"] for e in final_examples)
     avg_reward = total_reward / len(final_examples) if final_examples else 0.0
@@ -297,7 +286,6 @@ def main():
     print(f"  Total examples: {len(final_examples)}")
     print(f"  Good examples (undoctored): {good_count}")
     print(f"  Doctored gameplay: {doctored_gameplay_count}")
-    print(f"  Doctored tokens: {doctored_tokens_count}")
     print(f"  Average reward: {avg_reward:.2f}")
     print(f"  Average accuracy: {avg_accuracy:.2%}")
     print(f"  Perfect accuracy (100%): {perfect_accuracy} ({perfect_accuracy/len(final_examples)*100:.1f}%)")

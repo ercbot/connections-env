@@ -1,57 +1,46 @@
 #!/usr/bin/env python3
 """
-Filter puzzle rollouts into good and bad examples
+Filter puzzle rollouts into good and bad examples (gameplay failures only)
 
 Args:
-- input_file: Path to the results.jsonl file containing the environment rollouts
+- input_dir_or_file (optional): Path to directory containing .jsonl files, or a single .jsonl file
+  Defaults to "generate_results" directory if not provided
+- --export-rerun-puzzles (optional): Export rerun_puzzles.txt with puzzle IDs that need to be rerun:
+  - Puzzle IDs present in bad examples
+  - Puzzle IDs present in train_sft dataset but absent from the results loaded in
 
-Process each puzzle in the input file (puzzle_id):
-1. Group all rollouts for this puzzle together
-2. Sort rollouts by quality:
+Process each puzzle in the input files (puzzle_id):
+1. Load and combine all .jsonl files from the input directory
+2. Group all rollouts for each puzzle together
+3. Sort rollouts by quality:
    - Highest reward score
    - Tie-breaker: shortest average assistant message length (by tokens)
-3. Choose the best rollout which has no invalid guesses and won the game.
+4. Choose the best rollout which has no invalid guesses and won the game.
     - Save this to the good examples list
     - If no rollouts remain, save the best rollout to the bad examples list.
-4. Wrap all parts of the assistant before the <guess> tags in <think> tags.
-5. Save the good examples to good_examples.jsonl
-6. Save the bad examples to bad_examples.jsonl
+5. Wrap all parts of the assistant before the <guess> tags in <think> tags.
+6. Save the good examples to good_examples.jsonl
+7. Save the bad examples to bad_examples.jsonl
+8. If --export-rerun-puzzles is set, export rerun_puzzles.txt with puzzle IDs that need to be rerun:
+   - All puzzle IDs from bad examples
+   - All puzzle IDs in train_sft dataset that are missing from the results
 """
 
+import argparse
 import json
 import sys
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 from collections import defaultdict
 from transformers import AutoTokenizer
+from datasets import load_dataset
 
 # Import shared utilities
 from utils import (
     is_valid_guesses_only,
     is_won,
-    calculate_token_metrics,
-    wrap_reasoning_in_tags,
     process_rollout,
-    MAX_TOTAL_TOKENS,
-    MAX_GENERATION_TOKENS,
 )
-
-
-def get_num_words_in_puzzle(result: Dict[str, Any]) -> int:
-    """Get the total number of words in the puzzle."""
-    categories = result.get("info", {}).get("categories", [])
-    total_words = sum(len(cat.get("members", [])) for cat in categories)
-    return total_words
-
-
-def get_max_total_tokens_for_puzzle(result: Dict[str, Any]) -> int:
-    """Get the max total tokens limit based on puzzle size."""
-    num_words = get_num_words_in_puzzle(result)
-    if num_words <= 16:
-        return MAX_TOTAL_TOKENS  # 2048 for standard puzzles
-    else:
-        # Dynamic limit for larger puzzles, capped at 3072
-        return min(3072, 128 * num_words)
 
 
 def calculate_avg_assistant_tokens(result: Dict[str, Any], tokenizer) -> float:
@@ -187,8 +176,6 @@ def print_rejection_reasons_table(rejection_reasons: Dict[str, int]):
     reason_order = [
         "Invalid Guess",
         "Game Lost",
-        "Token Limit (Total)",
-        "Token Limit (Generation)",
     ]
 
     for reason in reason_order:
@@ -199,38 +186,112 @@ def print_rejection_reasons_table(rejection_reasons: Dict[str, int]):
     print("=" * 80)
 
 
+def get_train_sft_puzzle_ids() -> Set[str]:
+    """Load train_sft dataset and extract all puzzle IDs."""
+    print("Loading train_sft dataset from HuggingFace...")
+    train_sft_dataset = load_dataset("ericbotti/connections-puzzles", split="train_sft")
+    
+    # Extract puzzle IDs
+    puzzle_ids = set()
+    for puzzle in train_sft_dataset:
+        puzzle_id = str(puzzle.get("puzzle_id", ""))
+        if puzzle_id:
+            puzzle_ids.add(puzzle_id)
+    
+    print(f"  Found {len(puzzle_ids)} puzzle IDs in train_sft dataset")
+    return puzzle_ids
+
+
+def load_and_combine_results(input_path: Path) -> List[Dict[str, Any]]:
+    """
+    Load and combine all results from a directory or single file.
+    
+    If input_path is a directory, finds all .jsonl files and combines them.
+    If input_path is a file, loads just that file.
+    """
+    all_results = []
+    
+    if input_path.is_file():
+        # Single file
+        print(f"Loading from file: {input_path}")
+        with open(input_path, "r") as f:
+            for line in f:
+                if line.strip():
+                    all_results.append(json.loads(line))
+        print(f"  Loaded {len(all_results)} results")
+    elif input_path.is_dir():
+        # Directory - find all .jsonl files
+        jsonl_files = sorted(input_path.glob("*.jsonl"))
+        
+        if not jsonl_files:
+            print(f"Error: No .jsonl files found in directory {input_path}")
+            sys.exit(1)
+        
+        print(f"Found {len(jsonl_files)} .jsonl file(s) in directory:")
+        for f in jsonl_files:
+            print(f"  - {f.name}")
+        
+        # Load all examples from all files
+        for file_path in jsonl_files:
+            with open(file_path, "r") as f:
+                for line in f:
+                    if line.strip():
+                        all_results.append(json.loads(line))
+        
+        print(f"  Loaded {len(all_results)} total results")
+    else:
+        print(f"Error: Input path {input_path} does not exist or is not a file/directory")
+        sys.exit(1)
+    
+    return all_results
+
+
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: step_2_filter.py <input_file>")
-        print("  input_file: Path to the results.jsonl file containing the environment rollouts")
+    parser = argparse.ArgumentParser(
+        description="Filter puzzle rollouts into good and bad examples",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "input_dir_or_file",
+        type=Path,
+        nargs="?",
+        default=Path("generate_results"),
+        help="Path to directory containing .jsonl files, or a single .jsonl file (default: generate_results)",
+    )
+    parser.add_argument(
+        "--export-rerun-puzzles",
+        action="store_true",
+        help="Export rerun_puzzles.txt with puzzle IDs from train_sft dataset that are not in results",
+    )
+    
+    args = parser.parse_args()
+    input_path = args.input_dir_or_file
+
+    if not input_path.exists():
+        print(f"Error: Input path {input_path} does not exist")
         sys.exit(1)
 
-    input_file = Path(sys.argv[1])
-
-    if not input_file.exists():
-        print(f"Error: Input file {input_file} does not exist")
-        sys.exit(1)
-
-    print(f"Reading from: {input_file}")
+    print(f"Reading from: {input_path}")
     print("\nLoading tokenizer (PrimeIntellect/Qwen3-4b)...")
 
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-4b")
+
+    # Load and combine all results
+    all_results = load_and_combine_results(input_path)
 
     # Group rollouts by puzzle_id
     print("\nGrouping rollouts by puzzle_id...")
     rollouts_by_puzzle = defaultdict(list)
     total_rollouts = 0
 
-    with open(input_file, "r") as f:
-        for line in f:
-            total_rollouts += 1
-            result = json.loads(line)
-            puzzle_id = str(result.get("info", {}).get("puzzle_id", ""))
-            if not puzzle_id:
-                print(f"Warning: Skipping result without puzzle_id")
-                continue
-            rollouts_by_puzzle[puzzle_id].append(result)
+    for result in all_results:
+        total_rollouts += 1
+        puzzle_id = str(result.get("info", {}).get("puzzle_id", ""))
+        if not puzzle_id:
+            print(f"Warning: Skipping result without puzzle_id")
+            continue
+        rollouts_by_puzzle[puzzle_id].append(result)
 
     print(f"Found {total_rollouts} total rollouts across {len(rollouts_by_puzzle)} unique puzzles")
 
@@ -240,8 +301,6 @@ def main():
     rejection_reasons = {
         "Invalid Guess": 0,
         "Game Lost": 0,
-        "Token Limit (Total)": 0,
-        "Token Limit (Generation)": 0,
     }
 
     print("\nProcessing puzzles...")
@@ -254,7 +313,7 @@ def main():
             key=lambda r: (-r.get("reward", 0), calculate_avg_assistant_tokens(r, tokenizer))
         )
 
-        # Find the best rollout that has no invalid guesses, won, and is within token limits
+        # Find the best rollout that has no invalid guesses and won
         best_valid_winning = None
         rejection_reason = None
         for i, rollout in enumerate(sorted_rollouts):
@@ -266,26 +325,10 @@ def main():
                 if i == 0:  # Only track rejection reason for the best rollout
                     rejection_reason = "Game Lost"
             else:
-                # Only process rollout if it passes the first two checks
+                # All gameplay checks passed - process and accept
                 processed = process_rollout(rollout)
-
-                # Calculate token metrics once
-                total_tokens, max_gen_tokens = calculate_token_metrics(processed, tokenizer)
-
-                # Get dynamic token limit based on puzzle size
-                max_total_tokens_for_puzzle = get_max_total_tokens_for_puzzle(rollout)
-
-                # Check token limits
-                if total_tokens > max_total_tokens_for_puzzle:
-                    if i == 0:  # Only track rejection reason for the best rollout
-                        rejection_reason = "Token Limit (Total)"
-                elif max_gen_tokens > MAX_GENERATION_TOKENS:
-                    if i == 0:  # Only track rejection reason for the best rollout
-                        rejection_reason = "Token Limit (Generation)"
-                else:
-                    # All checks passed
-                    best_valid_winning = processed
-                    break
+                best_valid_winning = processed
+                break
 
         if best_valid_winning:
             # Add to good examples (already processed)
@@ -323,6 +366,59 @@ def main():
 
     # Print rejection reasons table for bad examples
     print_rejection_reasons_table(rejection_reasons)
+
+    # Export rerun_puzzles.txt if requested
+    if args.export_rerun_puzzles:
+        print("\n" + "=" * 80)
+        print("Exporting rerun_puzzles.txt...")
+        print("=" * 80)
+        
+        # Get all puzzle IDs from results (both good and bad)
+        result_puzzle_ids = set()
+        for example in good_examples:
+            puzzle_id = str(example.get("info", {}).get("puzzle_id", ""))
+            if puzzle_id:
+                result_puzzle_ids.add(puzzle_id)
+        for example in bad_examples:
+            puzzle_id = str(example.get("info", {}).get("puzzle_id", ""))
+            if puzzle_id:
+                result_puzzle_ids.add(puzzle_id)
+        
+        print(f"  Puzzle IDs in results: {len(result_puzzle_ids)}")
+        
+        # Get puzzle IDs from bad examples (these need to be rerun)
+        bad_puzzle_ids = set()
+        for example in bad_examples:
+            puzzle_id = str(example.get("info", {}).get("puzzle_id", ""))
+            if puzzle_id:
+                bad_puzzle_ids.add(puzzle_id)
+        
+        print(f"  Puzzle IDs in bad examples: {len(bad_puzzle_ids)}")
+        
+        # Get puzzle IDs from train_sft dataset
+        train_sft_puzzle_ids = get_train_sft_puzzle_ids()
+        
+        # Find puzzle IDs in train_sft but NOT in results (missing from results)
+        missing_from_results = train_sft_puzzle_ids - result_puzzle_ids
+        
+        # Rerun puzzle IDs = bad examples OR missing from results
+        rerun_puzzle_ids = bad_puzzle_ids | missing_from_results
+        
+        # Save rerun_puzzles.txt
+        rerun_file = "rerun_puzzles.txt"
+        print(f"\nSaving puzzle IDs to rerun to {rerun_file}...")
+        with open(rerun_file, "w") as f:
+            for puzzle_id in sorted(rerun_puzzle_ids):
+                f.write(f"{puzzle_id}\n")
+        
+        print(f"  Saved {len(rerun_puzzle_ids)} puzzle IDs")
+        print(f"  Summary:")
+        print(f"    Train SFT puzzle IDs: {len(train_sft_puzzle_ids)}")
+        print(f"    Puzzle IDs in results: {len(result_puzzle_ids)}")
+        print(f"    Puzzle IDs in bad examples: {len(bad_puzzle_ids)}")
+        print(f"    Puzzle IDs missing from results: {len(missing_from_results)}")
+        print(f"    Puzzle IDs to rerun (bad + missing): {len(rerun_puzzle_ids)}")
+        print(f"    Puzzle IDs in results but NOT in train_sft: {len(result_puzzle_ids - train_sft_puzzle_ids)}")
 
     print("\nDone!")
 
