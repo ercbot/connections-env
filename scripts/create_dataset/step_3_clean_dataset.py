@@ -6,7 +6,9 @@ This script applies all cleaning operations to complete_puzzles.jsonl:
 2. Remove image-based puzzles
 3. Remove trailing quotes from descriptions and linking_terms
 4. Fix backtick typos
-5. Filter by quality (≥ 4.0)
+5. Fix escaped quotes (\\" -> ")
+6. Fix escape sequences (\\t, \\n -> removed)
+7. Fix known word typos
 
 Input: complete_puzzles.jsonl (raw scraped data from step_2)
 Output: complete_puzzles_cleaned.jsonl (ready for upload in step_4)
@@ -74,6 +76,85 @@ def fix_backticks(word):
     return word.replace("`", "")
 
 
+def fix_escaped_quotes(word):
+    """
+    Fix escaped quotes in words.
+
+    Many words in the dataset have escaped quotes (\\") that should be
+    regular quotes ("). This is a systematic issue from the scraping process.
+    """
+    if not isinstance(word, str):
+        return word
+
+    # Replace escaped quotes with regular quotes
+    return word.replace('\\"', '"')
+
+
+def fix_escape_sequences(word):
+    """
+    Fix literal escape sequences in words and strip whitespace.
+
+    Some words have literal escape sequences like \\t (tab) and \\n (newline)
+    that should be removed. These are typos from the scraping process.
+    Also removes leading/trailing whitespace which affects ~12.5% of puzzles.
+    """
+    if not isinstance(word, str):
+        return word
+
+    # Remove literal escape sequences (backslash followed by letter)
+    # Common ones: \t (tab), \n (newline), \r (carriage return)
+    cleaned = word.replace('\\t', '').replace('\\n', '').replace('\\r', '')
+    
+    # Strip leading/trailing whitespace (affects ~12.5% of puzzles, mostly trailing)
+    return cleaned.strip()
+
+
+# Manual typo fixes: mapping of puzzle_id -> {incorrect_word: correct_word}
+TYPO_FIXES = {
+    "35022": {
+        "Pain au chocolate": "Pain au chocolat",
+    },
+    "63016": {
+        "Scorched [ ] quake,": "Scorched [ ] quake",
+    },
+    "27448": {
+        "Lail, Moor Bird": "Lail Moor Bird",
+    },
+    "98081": {
+        "Wedded -> Impairedthe appearance": "Wedded -> Impaired the appearance",
+    },
+    # Add more typos here as they are discovered
+    # Format: "puzzle_id": {"incorrect": "correct"}
+}
+
+
+def fix_typos(word, puzzle_id):
+    """
+    Fix known typos in words based on puzzle ID.
+
+    This is a manual typo fixer that can be extended as more typos
+    are discovered in the dataset.
+
+    Args:
+        word: The word to check for typos
+        puzzle_id: The puzzle ID to look up typo fixes
+
+    Returns:
+        The corrected word, or the original word if no fix is needed
+    """
+    if not isinstance(word, str):
+        return word
+
+    # Check if there are typo fixes for this puzzle
+    if str(puzzle_id) in TYPO_FIXES:
+        typo_map = TYPO_FIXES[str(puzzle_id)]
+        # Check if this word matches any known typo
+        if word in typo_map:
+            return typo_map[word]
+
+    return word
+
+
 def clean_puzzle(puzzle_data):
     """
     Apply all cleaning operations to a single puzzle.
@@ -82,18 +163,39 @@ def clean_puzzle(puzzle_data):
         tuple: (cleaned_puzzle, modifications_dict)
     """
     puzzle_content = puzzle_data.get("puzzle_content", {})
-    modifications = {"quotes_removed": 0, "backticks_fixed": 0}
+    puzzle_id = puzzle_data.get("puzzle_id") or puzzle_data.get("id")
+    modifications = {"quotes_removed": 0, "backticks_fixed": 0, "escaped_quotes_fixed": 0, "escape_sequences_fixed": 0, "typos_fixed": 0}
 
     # Clean each group
     cleaned_groups = []
     for group in puzzle_content.get("groups", []):
-        # Fix backticks in words
+        # Fix backticks, escaped quotes, and typos in words
         original_words = group.get("words", [])
         cleaned_words = []
         for word in original_words:
+            # Fix backticks first
             cleaned_word = fix_backticks(word)
             if cleaned_word != word:
                 modifications["backticks_fixed"] += 1
+            
+            # Then fix escaped quotes
+            original_for_escaped_check = cleaned_word
+            cleaned_word = fix_escaped_quotes(cleaned_word)
+            if cleaned_word != original_for_escaped_check:
+                modifications["escaped_quotes_fixed"] += 1
+            
+            # Fix escape sequences (like \t, \n)
+            original_for_escape_check = cleaned_word
+            cleaned_word = fix_escape_sequences(cleaned_word)
+            if cleaned_word != original_for_escape_check:
+                modifications["escape_sequences_fixed"] += 1
+            
+            # Finally fix typos (after all other fixes, so typo fixes can override if needed)
+            original_for_typo_check = cleaned_word
+            cleaned_word = fix_typos(cleaned_word, puzzle_id)
+            if cleaned_word != original_for_typo_check:
+                modifications["typos_fixed"] += 1
+            
             cleaned_words.append(cleaned_word)
 
         # Clean description (group theme)
@@ -132,9 +234,6 @@ def clean_dataset(
     """
     Clean the scraped dataset.
 
-    Note: Quality filtering (>= 4.0) already happened in step_1_fetch_grids.py,
-    so all puzzles here should already meet the quality threshold.
-
     Args:
         input_file: Input JSONL file with raw scraped puzzles
         output_file: Output JSONL file with cleaned puzzles
@@ -171,6 +270,9 @@ def clean_dataset(
         "has_urls": 0,
         "quotes_removed": 0,
         "backticks_fixed": 0,
+        "escaped_quotes_fixed": 0,
+        "escape_sequences_fixed": 0,
+        "typos_fixed": 0,
         "valid_output": 0,
     }
 
@@ -182,8 +284,6 @@ def clean_dataset(
         if puzzle.get("puzzle_content") is None:
             stats["failed_scrape"] += 1
             continue
-
-        # Note: Quality filtering (>= 4.0) already done in step_1
 
         # Skip image-based puzzles
         if is_image_puzzle(puzzle):
@@ -200,6 +300,9 @@ def clean_dataset(
 
         stats["quotes_removed"] += modifications["quotes_removed"]
         stats["backticks_fixed"] += modifications["backticks_fixed"]
+        stats["escaped_quotes_fixed"] += modifications["escaped_quotes_fixed"]
+        stats["escape_sequences_fixed"] += modifications["escape_sequences_fixed"]
+        stats["typos_fixed"] += modifications["typos_fixed"]
         stats["valid_output"] += 1
 
         cleaned_puzzles.append(cleaned_puzzle)
@@ -226,6 +329,9 @@ def clean_dataset(
     print(f"Cleaning operations:")
     print(f"  Trailing quotes removed: {stats['quotes_removed']:,}")
     print(f"  Backticks fixed:         {stats['backticks_fixed']:,}")
+    print(f"  Escaped quotes fixed:    {stats['escaped_quotes_fixed']:,}")
+    print(f"  Escape sequences fixed:  {stats['escape_sequences_fixed']:,}")
+    print(f"  Typos fixed:             {stats['typos_fixed']:,}")
     print()
     print(f"Output: {output_file}")
     print("=" * 80)
