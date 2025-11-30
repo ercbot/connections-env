@@ -316,7 +316,9 @@ class ConnectionsEnv(MultiTurnEnv):
         if currently_in_item_phase:
             # Parse the AI's guess
             try:
-                guessed_items = self.parser.parse_answer_as_list(last_message_content)
+                guessed_items, num_guess_tags = self.parser.parse_answer_as_list(
+                    last_message_content
+                )
                 guessed_items_lower = set([item.lower() for item in guessed_items])
             except Exception as e:
                 # If parsing fails, don't count as mistake - just ask to retry
@@ -327,6 +329,12 @@ class ConnectionsEnv(MultiTurnEnv):
                 )
                 state["guess_history"].append(asdict(guess_record))
                 return state
+
+            # Prepare note for multiple guess tags (only shown for valid guesses)
+            multiple_guess_note = ""
+            if num_guess_tags > 1:
+                items_str = items_to_string(guessed_items)
+                multiple_guess_note = f"Note: {num_guess_tags} guesses detected in your answer, using the last one: {items_str}\n\n"
 
             # Get expected group size from the first category
             expected_group_size = (
@@ -409,7 +417,9 @@ class ConnectionsEnv(MultiTurnEnv):
 
                 # Generate result message for correct guess
                 members_str = items_to_string(correct_category["members"])
-                result_msg = f"Correct! Group members: {members_str}."
+                result_msg = (
+                    f"{multiple_guess_note}Correct! Group members: {members_str}."
+                )
                 if self.ruleset_config.reveal_themes_immediately:
                     result_msg += f" Theme: {correct_category['group']}."
                 else:
@@ -496,9 +506,11 @@ class ConnectionsEnv(MultiTurnEnv):
 
                 # Generate result message for incorrect guess
                 if guess_status == "one_away":
-                    result_msg = "One away! Incorrect guess, try again."
+                    result_msg = (
+                        f"{multiple_guess_note}One away! Incorrect guess, try again."
+                    )
                 else:
-                    result_msg = "Incorrect guess, try again."
+                    result_msg = f"{multiple_guess_note}Incorrect guess, try again."
 
                 # Record valid but incorrect guess
                 guess_record = GuessRecord(
