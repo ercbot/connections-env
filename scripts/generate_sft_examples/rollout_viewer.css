@@ -122,15 +122,10 @@ body {
 }
 
 .example-info {
-    background: #dbeafe;
+    background: #f3f4f6;
     padding: 15px 20px;
-    border-bottom: 2px solid #3b82f6;
+    border-bottom: 2px solid #d1d5db;
     flex-shrink: 0;
-}
-
-.example-info.doctored {
-    background: #fef3c7;
-    border-bottom-color: #f59e0b;
 }
 
 .example-info-grid {
@@ -147,24 +142,16 @@ body {
 .info-label {
     font-size: 11px;
     font-weight: 600;
-    color: #1e40af;
+    color: #6b7280;
     text-transform: uppercase;
     letter-spacing: 0.5px;
     margin-bottom: 3px;
 }
 
-.example-info.doctored .info-label {
-    color: #92400e;
-}
-
 .info-value {
     font-size: 15px;
     font-weight: 600;
-    color: #1e3a8a;
-}
-
-.example-info.doctored .info-value {
-    color: #78350f;
+    color: #1f2937;
 }
 
 .categories-section {
@@ -416,18 +403,9 @@ guess {
     border-radius: 12px;
     font-size: 11px;
     font-weight: 600;
-    text-transform: uppercase;
     letter-spacing: 0.5px;
-}
-
-.badge.doctored {
-    background: #fef3c7;
-    color: #92400e;
-}
-
-.badge.good {
-    background: #d1fae5;
-    color: #047857;
+    background: #e5e7eb;
+    color: #374151;
 }
 
 .guess-item {

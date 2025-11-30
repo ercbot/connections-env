@@ -16,8 +16,7 @@ Combines files and outputs in final format:
 - accuracy (correct_guesses / all_guesses)
 - guess_history
 - categories (preserved from info.categories for viewing)
-- doctored (boolean flag indicating if example was doctored)
-- doctoring_type (none or gameplay)
+- tags (list of tags for filtering, e.g. ["good example"], ["doctored"], ["rr: invalid guess"])
 - complete_reason (preserved for filtering)
 
 NOTE: Token reduction and validation is done in step_5_reduce_tokens.py,
@@ -59,7 +58,7 @@ def synthesize_example(example: Dict[str, Any], doctoring_type: str = "none") ->
         doctoring_type: "none", "gameplay", or "tokens"
 
     Fields: puzzle_id, prompt, completion, reward, accuracy, guess_history, categories,
-            doctored, doctoring_type, complete_reason
+            tags, complete_reason
     """
     puzzle_id = example.get("info", {}).get("puzzle_id", "unknown")
     prompt = example.get("prompt", [])
@@ -71,6 +70,22 @@ def synthesize_example(example: Dict[str, Any], doctoring_type: str = "none") ->
 
     accuracy = calculate_accuracy(guess_history)
 
+    # Build tags list - start with existing tags from input example
+    tags = list(example.get("tags", []))
+    
+    # Add doctoring tag if applicable
+    if doctoring_type == "gameplay":
+        tags.append("doctored")
+    elif doctoring_type == "tokens":
+        tags.append("doctored")
+    
+    # If no tags exist, add a default based on doctoring type
+    if not tags:
+        if doctoring_type == "none":
+            tags = ["good example"]
+        else:
+            tags = ["doctored"]
+
     return {
         "puzzle_id": puzzle_id,
         "prompt": prompt,
@@ -79,8 +94,7 @@ def synthesize_example(example: Dict[str, Any], doctoring_type: str = "none") ->
         "accuracy": accuracy,
         "guess_history": guess_history,
         "categories": categories,  # Preserve for viewer
-        "doctored": doctoring_type != "none",  # Boolean for backward compatibility
-        "doctoring_type": doctoring_type,  # "none", "gameplay", or "tokens"
+        "tags": tags,  # Tags for filtering
         "complete_reason": complete_reason,  # Preserve for filtering
     }
 
@@ -268,8 +282,8 @@ def main():
     )
 
     # Calculate statistics
-    good_count = sum(1 for e in final_examples if e.get("doctoring_type") == "none")
-    doctored_gameplay_count = sum(1 for e in final_examples if e.get("doctoring_type") == "gameplay")
+    good_count = sum(1 for e in final_examples if "good example" in e.get("tags", []))
+    doctored_count = sum(1 for e in final_examples if "doctored" in e.get("tags", []))
 
     total_reward = sum(e["reward"] for e in final_examples)
     avg_reward = total_reward / len(final_examples) if final_examples else 0.0
@@ -284,8 +298,8 @@ def main():
     print("DATASET STATISTICS")
     print(f"{'='*60}")
     print(f"  Total examples: {len(final_examples)}")
-    print(f"  Good examples (undoctored): {good_count}")
-    print(f"  Doctored gameplay: {doctored_gameplay_count}")
+    print(f"  Good examples: {good_count}")
+    print(f"  Doctored examples: {doctored_count}")
     print(f"  Average reward: {avg_reward:.2f}")
     print(f"  Average accuracy: {avg_accuracy:.2%}")
     print(f"  Perfect accuracy (100%): {perfect_accuracy} ({perfect_accuracy/len(final_examples)*100:.1f}%)")

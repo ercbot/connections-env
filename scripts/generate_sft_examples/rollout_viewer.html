@@ -16,11 +16,9 @@
 
     <div class="controls">
         <div>
-            <label for="typeFilter">Type:</label>
-            <select id="typeFilter">
+            <label for="tagFilter">Tag:</label>
+            <select id="tagFilter">
                 <option value="all">All</option>
-                <option value="good">Good Examples</option>
-                <option value="doctored">Doctored Examples</option>
             </select>
         </div>
 
@@ -87,25 +85,51 @@
             initializeViewer();
         }
 
+        function getExampleTags(example) {
+            // If example has explicit tags array, use it
+            if (Array.isArray(example.tags) && example.tags.length > 0) {
+                return example.tags;
+            }
+            // Backwards compatibility: derive tags from doctored boolean
+            if (example.doctored) {
+                return ['doctored'];
+            }
+            return ['good example'];
+        }
+
+
         function initializeViewer() {
+            // Populate complete reason filter
             const completeFilter = document.getElementById('completeFilter');
             [...new Set(allExamples.map(e => e.complete_reason || 'unknown'))].sort().forEach(reason => {
                 const option = document.createElement('option');
                 option.value = option.textContent = reason;
                 completeFilter.appendChild(option);
             });
+
+            // Populate tag filter dynamically from all unique tags
+            const tagFilter = document.getElementById('tagFilter');
+            const allTags = new Set();
+            allExamples.forEach(example => {
+                getExampleTags(example).forEach(tag => allTags.add(tag));
+            });
+            [...allTags].sort().forEach(tag => {
+                const option = document.createElement('option');
+                option.value = option.textContent = tag;
+                tagFilter.appendChild(option);
+            });
+
             applyFilters();
         }
 
         function applyFilters() {
-            const typeFilter = document.getElementById('typeFilter').value;
+            const tagFilter = document.getElementById('tagFilter').value;
             const completeFilter = document.getElementById('completeFilter').value;
             const searchPuzzle = document.getElementById('searchPuzzle').value.trim().toLowerCase();
 
             filteredExamples = allExamples.filter(example => {
-                const typeMatch = typeFilter === 'all' ||
-                    (typeFilter === 'good' && !example.doctored) ||
-                    (typeFilter === 'doctored' && example.doctored);
+                const exampleTags = getExampleTags(example);
+                const tagMatch = tagFilter === 'all' || exampleTags.includes(tagFilter);
 
                 const completeMatch = completeFilter === 'all' ||
                     (example.complete_reason || 'unknown') === completeFilter;
@@ -113,7 +137,7 @@
                 const puzzleId = example.puzzle_id || example.info?.puzzle_id || '';
                 const puzzleMatch = !searchPuzzle || puzzleId.toString().toLowerCase().includes(searchPuzzle);
 
-                return typeMatch && completeMatch && puzzleMatch;
+                return tagMatch && completeMatch && puzzleMatch;
             });
 
             currentIndex = 0;
@@ -222,7 +246,7 @@
             const reward = example.reward || 0;
             const accuracy = example.accuracy || 0;
             const completeReason = example.complete_reason || 'unknown';
-            const isDoctored = example.doctored || false;
+            const tags = getExampleTags(example);
             const foundCount = getFoundCategoryIndices(example).size;
             const totalCategories = categories.length;
 
@@ -230,11 +254,9 @@
 
             const html = `
                 <div class="left-panel">
-                    <div class="example-info ${isDoctored ? 'doctored' : ''}">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                            <span class="badge ${isDoctored ? 'doctored' : 'good'}">
-                                ${isDoctored ? 'Doctored' : 'Good'}
-                            </span>
+                    <div class="example-info">
+                        <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px;">
+                            ${tags.map(tag => `<span class="badge">${escapeHtml(tag)}</span>`).join('')}
                         </div>
                         <div class="example-info-grid">
                             <div class="info-item">
