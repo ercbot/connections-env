@@ -333,19 +333,35 @@ def main():
         if best_valid_winning:
             # Add to good examples (already processed)
             best_valid_winning["tags"] = ["good example"]
+            best_valid_winning["metadata"] = {
+                "Quality": "good",
+                "Complete Reason": best_valid_winning.get("complete_reason", "unknown"),
+            }
             good_examples.append(best_valid_winning)
         else:
             # No valid winning rollout, use the best rollout overall
             best_rollout = sorted_rollouts[0]
             # Process the rollout (add think tags)
             processed = process_rollout(best_rollout)
-            # Add tags based on rejection reason
+            # Add tags and metadata based on rejection reason
             if rejection_reason == "Invalid Guess":
                 processed["tags"] = ["rr: invalid guess"]
+                processed["metadata"] = {
+                    "Rejection Reason": "invalid guess",
+                    "Complete Reason": processed.get("complete_reason", "unknown"),
+                }
             elif rejection_reason == "Game Lost":
                 processed["tags"] = ["rr: game lost"]
+                processed["metadata"] = {
+                    "Rejection Reason": "game lost",
+                    "Complete Reason": processed.get("complete_reason", "unknown"),
+                }
             else:
                 processed["tags"] = ["rr: unknown"]
+                processed["metadata"] = {
+                    "Rejection Reason": "unknown",
+                    "Complete Reason": processed.get("complete_reason", "unknown"),
+                }
             bad_examples.append(processed)
             # Track the rejection reason
             if rejection_reason:

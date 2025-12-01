@@ -15,26 +15,27 @@
     </div>
 
     <div class="controls">
-        <div>
-            <label for="tagFilter">Tag:</label>
-            <select id="tagFilter">
-                <option value="all">All</option>
-            </select>
+        <div class="filter-container">
+            <div class="filter-dropdown" id="filterDropdown">
+                <button class="filter-button" onclick="toggleFilterDropdown()">
+                    <span>Filter</span>
+                    <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor">
+                        <path d="M2.5 4L6 7.5L9.5 4" stroke="currentColor" stroke-width="1.5" fill="none"/>
+                    </svg>
+                </button>
+                <div class="filter-menu" id="filterMenu">
+                    <!-- Populated dynamically -->
+                </div>
+            </div>
+            <div class="active-filters" id="activeFilters">
+                <!-- Active filter chips appear here -->
+            </div>
         </div>
 
-        <div>
-            <label for="completeFilter">Complete Reason:</label>
-            <select id="completeFilter">
-                <option value="all">All</option>
-            </select>
-        </div>
-
-        <div>
+        <div class="search-container">
             <label for="searchPuzzle">Search Puzzle ID:</label>
-            <input type="text" id="searchPuzzle" placeholder="Enter puzzle ID">
+            <input type="text" id="searchPuzzle" placeholder="Enter puzzle ID" onkeyup="handleSearchKeyup(event)">
         </div>
-
-        <button onclick="applyFilters()">Apply Filters</button>
 
         <div class="navigation">
             <button onclick="prevExample()" id="prevBtn">← Previous</button>
@@ -63,6 +64,8 @@
         let currentIndex = 0;
         let showSystemMessages = false;
         let viewMode = 'conversation';
+        let activeFilters = {}; // { "Rejection Reason": "invalid guess", "Complete Reason": "max_mistakes" }
+        let metadataSchema = {}; // { "Rejection Reason": Set(["invalid guess", "game lost"]), ... }
 
         function loadFile(event) {
             const file = event.target.files[0];
@@ -85,59 +88,177 @@
             initializeViewer();
         }
 
-        function getExampleTags(example) {
-            // If example has explicit tags array, use it
-            if (Array.isArray(example.tags) && example.tags.length > 0) {
-                return example.tags;
-            }
-            // Backwards compatibility: derive tags from doctored boolean
-            if (example.doctored) {
-                return ['doctored'];
-            }
-            return ['good example'];
+        function getExampleMetadata(example) {
+            return example.metadata || {};
         }
 
+        function buildMetadataSchema() {
+            metadataSchema = {};
+            
+            for (const example of allExamples) {
+                const metadata = getExampleMetadata(example);
+                for (const [key, value] of Object.entries(metadata)) {
+                    if (!metadataSchema[key]) {
+                        metadataSchema[key] = new Set();
+                    }
+                    metadataSchema[key].add(value);
+                }
+            }
+            
+            // Convert Sets to sorted arrays for consistent ordering
+            for (const key of Object.keys(metadataSchema)) {
+                metadataSchema[key] = [...metadataSchema[key]].sort();
+            }
+        }
 
         function initializeViewer() {
-            // Populate complete reason filter
-            const completeFilter = document.getElementById('completeFilter');
-            [...new Set(allExamples.map(e => e.complete_reason || 'unknown'))].sort().forEach(reason => {
-                const option = document.createElement('option');
-                option.value = option.textContent = reason;
-                completeFilter.appendChild(option);
-            });
-
-            // Populate tag filter dynamically from all unique tags
-            const tagFilter = document.getElementById('tagFilter');
-            const allTags = new Set();
-            allExamples.forEach(example => {
-                getExampleTags(example).forEach(tag => allTags.add(tag));
-            });
-            [...allTags].sort().forEach(tag => {
-                const option = document.createElement('option');
-                option.value = option.textContent = tag;
-                tagFilter.appendChild(option);
-            });
-
+            // Build the metadata schema from all examples
+            buildMetadataSchema();
+            
+            // Build the filter menu
+            buildFilterMenu();
+            
+            // Apply initial filters (none)
             applyFilters();
         }
 
+        function buildFilterMenu() {
+            const menu = document.getElementById('filterMenu');
+            menu.innerHTML = '';
+            
+            const sortedKeys = Object.keys(metadataSchema).sort();
+            
+            for (const key of sortedKeys) {
+                const values = metadataSchema[key];
+                
+                const submenuContainer = document.createElement('div');
+                submenuContainer.className = 'filter-submenu-container';
+                
+                const keyItem = document.createElement('div');
+                keyItem.className = 'filter-menu-item has-submenu';
+                keyItem.innerHTML = `
+                    <span>${escapeHtml(key)}</span>
+                    <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor">
+                        <path d="M4 2.5L7.5 6L4 9.5" stroke="currentColor" stroke-width="1.5" fill="none"/>
+                    </svg>
+                `;
+                
+                const submenu = document.createElement('div');
+                submenu.className = 'filter-submenu';
+                
+                for (const value of values) {
+                    const valueItem = document.createElement('div');
+                    valueItem.className = 'filter-menu-item';
+                    
+                    // Check if this filter is active
+                    const isActive = activeFilters[key] === value;
+                    if (isActive) {
+                        valueItem.classList.add('active');
+                    }
+                    
+                    valueItem.textContent = value;
+                    valueItem.onclick = (e) => {
+                        e.stopPropagation();
+                        toggleFilter(key, value);
+                    };
+                    submenu.appendChild(valueItem);
+                }
+                
+                submenuContainer.appendChild(keyItem);
+                submenuContainer.appendChild(submenu);
+                menu.appendChild(submenuContainer);
+            }
+        }
+
+        function toggleFilterDropdown() {
+            const menu = document.getElementById('filterMenu');
+            menu.classList.toggle('show');
+        }
+
+        function toggleFilter(key, value) {
+            if (activeFilters[key] === value) {
+                // Remove filter
+                delete activeFilters[key];
+            } else {
+                // Add/replace filter
+                activeFilters[key] = value;
+            }
+            
+            // Close dropdown
+            document.getElementById('filterMenu').classList.remove('show');
+            
+            // Update UI
+            renderActiveFilters();
+            buildFilterMenu(); // Rebuild to show active state
+            applyFilters();
+        }
+
+        function removeFilter(key) {
+            delete activeFilters[key];
+            renderActiveFilters();
+            buildFilterMenu();
+            applyFilters();
+        }
+
+        function clearAllFilters() {
+            activeFilters = {};
+            renderActiveFilters();
+            buildFilterMenu();
+            applyFilters();
+        }
+
+        function renderActiveFilters() {
+            const container = document.getElementById('activeFilters');
+            const keys = Object.keys(activeFilters);
+            
+            if (keys.length === 0) {
+                container.innerHTML = '';
+                return;
+            }
+            
+            let html = '';
+            for (const key of keys) {
+                const value = activeFilters[key];
+                html += `
+                    <div class="filter-chip">
+                        <span class="filter-chip-key">${escapeHtml(key)}:</span>
+                        <span class="filter-chip-value">${escapeHtml(value)}</span>
+                        <button class="filter-chip-remove" onclick="removeFilter('${escapeHtml(key)}')" title="Remove filter">×</button>
+                    </div>
+                `;
+            }
+            
+            if (keys.length > 1) {
+                html += `<button class="clear-filters-button" onclick="clearAllFilters()">Clear all</button>`;
+            }
+            
+            container.innerHTML = html;
+        }
+
+        function handleSearchKeyup(event) {
+            if (event.key === 'Enter') {
+                applyFilters();
+            }
+        }
+
         function applyFilters() {
-            const tagFilter = document.getElementById('tagFilter').value;
-            const completeFilter = document.getElementById('completeFilter').value;
             const searchPuzzle = document.getElementById('searchPuzzle').value.trim().toLowerCase();
 
             filteredExamples = allExamples.filter(example => {
-                const exampleTags = getExampleTags(example);
-                const tagMatch = tagFilter === 'all' || exampleTags.includes(tagFilter);
+                const metadata = getExampleMetadata(example);
+                
+                // Check all active filters (AND logic)
+                for (const [key, value] of Object.entries(activeFilters)) {
+                    if (metadata[key] !== value) {
+                        return false;
+                    }
+                }
 
-                const completeMatch = completeFilter === 'all' ||
-                    (example.complete_reason || 'unknown') === completeFilter;
-
+                // Check puzzle ID search
                 const puzzleId = example.puzzle_id || example.info?.puzzle_id || '';
                 const puzzleMatch = !searchPuzzle || puzzleId.toString().toLowerCase().includes(searchPuzzle);
 
-                return tagMatch && completeMatch && puzzleMatch;
+                return puzzleMatch;
             });
 
             currentIndex = 0;
@@ -245,18 +366,22 @@
             const puzzleId = example.puzzle_id || example.info?.puzzle_id || 'unknown';
             const reward = example.reward || 0;
             const accuracy = example.accuracy || 0;
-            const completeReason = example.complete_reason || 'unknown';
-            const tags = getExampleTags(example);
+            const metadata = getExampleMetadata(example);
             const foundCount = getFoundCategoryIndices(example).size;
             const totalCategories = categories.length;
 
             const fullConversation = [...(example.prompt || []), ...(example.completion || [])];
 
+            // Build metadata badges
+            const metadataBadges = Object.entries(metadata)
+                .map(([key, value]) => `<span class="badge" title="${escapeHtml(key)}">${escapeHtml(value)}</span>`)
+                .join('');
+
             const html = `
                 <div class="left-panel">
                     <div class="example-info">
                         <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px;">
-                            ${tags.map(tag => `<span class="badge">${escapeHtml(tag)}</span>`).join('')}
+                            ${metadataBadges}
                         </div>
                         <div class="example-info-grid">
                             <div class="info-item">
@@ -270,10 +395,6 @@
                             <div class="info-item">
                                 <span class="info-label">Accuracy</span>
                                 <span class="info-value">${(accuracy * 100).toFixed(1)}%</span>
-                            </div>
-                            <div class="info-item">
-                                <span class="info-label">Complete Reason</span>
-                                <span class="info-value">${completeReason}</span>
                             </div>
                             <div class="info-item">
                                 <span class="info-label">Categories Found</span>
@@ -556,6 +677,14 @@
             return div.innerHTML;
         }
 
+        // Close dropdown when clicking outside
+        document.addEventListener('click', (e) => {
+            const dropdown = document.getElementById('filterDropdown');
+            if (dropdown && !dropdown.contains(e.target)) {
+                document.getElementById('filterMenu').classList.remove('show');
+            }
+        });
+
         document.addEventListener('keydown', (e) => {
             if (e.key === 'ArrowLeft') prevExample();
             else if (e.key === 'ArrowRight') nextExample();
@@ -567,4 +696,3 @@
     </script>
 </body>
 </html>
-

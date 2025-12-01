@@ -38,7 +38,8 @@ from utils import (
 
 
 # Rejection reasons that indicate gameplay issues (only these are handled in this step)
-GAMEPLAY_REJECTION_REASONS = {"Invalid Guess", "Game Lost"}
+# These match the values in metadata["Rejection Reason"]
+GAMEPLAY_REJECTION_REASONS = {"invalid guess", "game lost"}
 
 
 class CategoryRanking(BaseModel):
@@ -398,7 +399,9 @@ def main():
     skipped_examples = []
 
     for example in bad_examples:
-        rejection_reason = example.get("rejection_reason")
+        metadata = example.get("metadata", {})
+        rejection_reason = metadata.get("Rejection Reason")
+        
         if rejection_reason in GAMEPLAY_REJECTION_REASONS:
             gameplay_examples.append(example)
         else:

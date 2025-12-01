@@ -93,6 +93,183 @@ body {
     cursor: not-allowed;
 }
 
+/* Filter container and dropdown */
+.filter-container {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.filter-dropdown {
+    position: relative;
+}
+
+.filter-button {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 14px;
+    background: white;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    color: #374151;
+    transition: all 0.15s;
+}
+
+.filter-button:hover {
+    background: #f9fafb;
+    border-color: #9ca3af;
+}
+
+.filter-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    min-width: 180px;
+    background: white;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+    z-index: 100;
+    display: none;
+    padding: 4px 0;
+}
+
+.filter-menu.show {
+    display: block;
+}
+
+.filter-submenu-container {
+    position: relative;
+}
+
+.filter-menu-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    font-size: 13px;
+    color: #374151;
+    cursor: pointer;
+    transition: background 0.1s;
+}
+
+.filter-menu-item:hover {
+    background: #f3f4f6;
+}
+
+.filter-menu-item.active {
+    background: #eff6ff;
+    color: #2563eb;
+    font-weight: 500;
+}
+
+.filter-menu-item.has-submenu {
+    font-weight: 500;
+}
+
+.filter-submenu {
+    position: absolute;
+    left: 100%;
+    top: 0;
+    min-width: 160px;
+    background: white;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+    z-index: 101;
+    display: none;
+    padding: 4px 0;
+}
+
+.filter-submenu-container:hover > .filter-submenu {
+    display: block;
+}
+
+.filter-submenu-container:hover > .filter-menu-item {
+    background: #f3f4f6;
+}
+
+/* Active filter chips */
+.active-filters {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.filter-chip {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 8px 4px 10px;
+    background: #eff6ff;
+    border: 1px solid #bfdbfe;
+    border-radius: 16px;
+    font-size: 12px;
+    color: #1e40af;
+}
+
+.filter-chip-key {
+    color: #6b7280;
+    font-weight: 400;
+}
+
+.filter-chip-value {
+    font-weight: 500;
+}
+
+.filter-chip-remove {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    margin-left: 2px;
+    background: transparent;
+    border: none;
+    border-radius: 50%;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 600;
+    color: #6b7280;
+    line-height: 1;
+    transition: all 0.15s;
+}
+
+.filter-chip-remove:hover {
+    background: #dbeafe;
+    color: #1e40af;
+}
+
+.clear-filters-button {
+    padding: 4px 10px;
+    background: transparent;
+    border: 1px solid #d1d5db;
+    border-radius: 4px;
+    font-size: 12px;
+    color: #6b7280;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.clear-filters-button:hover {
+    background: #f3f4f6;
+    border-color: #9ca3af;
+    color: #374151;
+}
+
+.search-container {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
 .navigation {
     display: flex;
     gap: 10px;
