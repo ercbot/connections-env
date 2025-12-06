@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
 """
-Doctor gameplay examples using the verifiers environment.
+Retry failed gameplay examples from their best checkpoint.
 
-This script loads doctor_gameplay.jsonl (which have doctoring instructions
-in the system prompt for completing failed games) and uses the ConnectionsEnv
-to generate completions.
+This script loads doctor_gameplay.jsonl (truncated examples from step_3) and uses
+the ConnectionsEnv to continue the game from the truncation point. The goal is to
+get more natural, successful completions by giving the model another chance.
+
+Strategy:
+- Step 3 truncated bad examples back to their last valid state (before invalid guesses
+  or game-losing mistakes)
+- This script continues from that checkpoint, letting the model try again naturally
+- No doctoring instructions - the model plays authentically
+- Multiple reruns can squeeze more good examples from the pool
 
 After running the environment, it validates the results:
-- Valid examples (no invalid guesses, game won) → doctored_gameplay.jsonl
-- Invalid examples (still have issues) → doctor_gameplay_rerun.jsonl (pass-through for retry)
-
-The doctoring instructions are combined with the base system prompt and passed
-as the system_prompt to ConnectionsEnv. The dataset keeps the 'prompt' field
-as a list of messages, which is valid syntax when are_datasets_raw=False.
+- Valid examples (no invalid guesses, game won) → doctored_examples_N.jsonl
+- Invalid examples (still have issues) → doctor_gameplay_rerun.jsonl (for retry)
 """
 
 import asyncio
@@ -205,16 +208,37 @@ def main():
                 if puzzle_id:
                     original_doctor_ready[puzzle_id] = example
 
+    print(f"  Total input examples: {len(original_doctor_ready)}")
+    print(f"  Results from evaluation: {len(doctored_results)}")
+    
+    # Track which puzzles were processed and which passed
+    processed_puzzle_ids = set()
+    valid_puzzle_ids = set()
+    
     # Validate and separate results
     valid_examples = []
     invalid_examples = []
+    missing_puzzle_ids = []  # Track puzzle IDs not found in original input
     rejection_reasons = {
         "Invalid Guess": 0,
         "Game Lost": 0,
+        "Not Processed": 0,
     }
 
     for result in doctored_results:
         puzzle_id = result.get("info", {}).get("puzzle_id")
+        if puzzle_id:
+            processed_puzzle_ids.add(puzzle_id)
+
+        # Check for None guess_history first
+        guess_history = result.get("guess_history")
+        if guess_history is None:
+            rejection_reasons["Game Lost"] += 1  # Treat None as failed game
+            if puzzle_id in original_doctor_ready:
+                invalid_examples.append(original_doctor_ready[puzzle_id])
+            else:
+                missing_puzzle_ids.append(puzzle_id)
+            continue
 
         # Validate gameplay
         if not is_valid_guesses_only(result):
@@ -222,43 +246,71 @@ def main():
             # Add original doctor-ready example to rerun list
             if puzzle_id in original_doctor_ready:
                 invalid_examples.append(original_doctor_ready[puzzle_id])
+            else:
+                missing_puzzle_ids.append(puzzle_id)
         elif not is_won(result):
             rejection_reasons["Game Lost"] += 1
             # Add original doctor-ready example to rerun list
             if puzzle_id in original_doctor_ready:
                 invalid_examples.append(original_doctor_ready[puzzle_id])
+            else:
+                missing_puzzle_ids.append(puzzle_id)
         else:
             # Process and add to valid examples
             processed = process_rollout(result)
             valid_examples.append(processed)
+            if puzzle_id:
+                valid_puzzle_ids.add(puzzle_id)
+    
+    # Add all unprocessed examples to rerun list
+    unprocessed_count = 0
+    for puzzle_id, example in original_doctor_ready.items():
+        if puzzle_id not in processed_puzzle_ids:
+            invalid_examples.append(example)
+            unprocessed_count += 1
+    
+    if unprocessed_count > 0:
+        rejection_reasons["Not Processed"] = unprocessed_count
 
     # Save valid doctored examples
     print(f"\n  Valid examples: {len(valid_examples)}")
-    print(f"  Invalid examples: {len(invalid_examples)}")
+    print(f"  Invalid/Incomplete examples: {len(invalid_examples)}")
     print(f"    - Invalid Guess: {rejection_reasons['Invalid Guess']}")
     print(f"    - Game Lost: {rejection_reasons['Game Lost']}")
+    print(f"    - Not Processed: {rejection_reasons.get('Not Processed', 0)}")
+    
+    if missing_puzzle_ids:
+        print(f"\n  ⚠ Warning: {len(missing_puzzle_ids)} invalid examples had puzzle_ids not found in input file")
+        print(f"    These examples cannot be rerun: {missing_puzzle_ids}")
 
     if valid_examples:
         print(f"\n  Saving valid examples to: {output_file}")
         with open(output_file, "w") as f:
             for example in valid_examples:
                 f.write(json.dumps(example) + "\n")
+        print(f"  ✓ Saved {len(valid_examples)} valid examples")
 
     # Save invalid examples for rerun (pass-through original doctor-ready format)
+    rerun_file = base_output_dir / "doctor_gameplay_rerun.jsonl"
     if invalid_examples:
-        rerun_file = base_output_dir / "doctor_gameplay_rerun.jsonl"
-        print(f"  Saving examples for rerun to: {rerun_file}")
+        print(f"\n  Saving examples for rerun to: {rerun_file}")
         with open(rerun_file, "w") as f:
             for example in invalid_examples:
                 f.write(json.dumps(example) + "\n")
+        print(f"  ✓ Saved {len(invalid_examples)} examples to rerun file")
         print(f"\n  ⚠ {len(invalid_examples)} examples need to be rerun")
         print(f"  To rerun: uv run step_4_doctor_gameplay.py {rerun_file} --output-dir {base_output_dir}")
+    else:
+        # Create empty rerun file to signal completion
+        print(f"\n  Creating empty rerun file (all examples passed): {rerun_file}")
+        with open(rerun_file, "w") as f:
+            pass
+        print(f"  ✓ All examples passed validation!")
 
     print(f"\n✓ Successfully doctored {len(valid_examples)}/{len(doctored_results)} examples")
     if valid_examples:
-        print(f"  Saved to: {output_file}")
-    if invalid_examples:
-        print(f"  Rerun file: {rerun_file}")
+        print(f"  Valid examples saved to: {output_file}")
+    print(f"  Rerun file: {rerun_file} ({len(invalid_examples)} examples)")
 
     print(f"\nNext steps:")
     if invalid_examples:
