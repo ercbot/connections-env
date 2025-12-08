@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Dict, List, Set, Tuple
 
 from datasets import Dataset, load_dataset
+from transformers import AutoTokenizer
 
 from connections.environment import ConnectionsEnv
 from utils import (
@@ -28,6 +29,7 @@ from utils import (
     is_won,
     process_rollout,
     truncate_processed_rollout,
+    MAX_GENERATION_TOKENS,
 )
 
 
@@ -101,6 +103,50 @@ def calculate_salvage_quality(result: Dict) -> float:
     return score
 
 
+def mark_over_limit_as_invalid(result: Dict, tokenizer, token_limit: int) -> Dict:
+    """
+    Mark any assistant message that exceeds token_limit as invalid.
+    
+    This simulates treating >token_limit as an invalid guess, which allows
+    the salvage logic to potentially truncate and doctor the rollout.
+    
+    Args:
+        result: Rollout result dict with "completion" and "guess_history"
+        tokenizer: transformers tokenizer
+        token_limit: Maximum tokens allowed per assistant message
+        
+    Returns:
+        Modified result with over-limit guesses marked as invalid
+    """
+    result = result.copy()
+    completion = result.get("completion", [])
+    guess_history = result.get("guess_history", [])
+    
+    # If no guess_history, return as-is
+    if not guess_history:
+        return result
+    
+    guess_history = guess_history.copy()
+    
+    # Find which assistant messages exceed the limit
+    assistant_idx = 0
+    for msg in completion:
+        if msg.get("role") == "assistant":
+            content = msg.get("content", "")
+            tokens = len(tokenizer.encode(content))
+            
+            # If this message exceeds limit, mark corresponding guess as invalid
+            if tokens > token_limit and assistant_idx < len(guess_history):
+                guess_history[assistant_idx] = guess_history[assistant_idx].copy()
+                guess_history[assistant_idx]["status"] = "invalid"
+                guess_history[assistant_idx]["invalid_reason"] = f"over_token_limit_{tokens}"
+            
+            assistant_idx += 1
+    
+    result["guess_history"] = guess_history
+    return result
+
+
 def load_existing_results(results_dir: Path) -> List[Dict]:
     """
     Load all results_N.jsonl files from the results directory.
@@ -139,7 +185,7 @@ def get_train_sft_puzzle_ids() -> Set[str]:
     return puzzle_ids
 
 
-def select_best_rollouts(results: List[Dict]) -> Dict[str, Dict]:
+def select_best_rollouts(results: List[Dict], min_salvage_quality: float = 0.0) -> Dict[str, Dict]:
     """
     Group results by puzzle_id and select the best rollout for each.
 
@@ -151,6 +197,14 @@ def select_best_rollouts(results: List[Dict]) -> Dict[str, Dict]:
     Selection criteria for non-valid/won rollouts (in order):
     1. Highest salvage quality (exponentially weighted correct guesses)
     2. Shortest average assistant message tokens (after truncation)
+
+    Rollouts with salvage quality below min_salvage_quality are discarded
+    (treated as if no rollout exists for that puzzle).
+
+    Args:
+        results: List of rollout results
+        min_salvage_quality: Minimum salvage quality score to consider a rollout usable.
+                            Rollouts scoring below this are discarded. Default: 0.0
 
     Returns:
         Dict mapping puzzle_id -> best rollout
@@ -179,6 +233,10 @@ def select_best_rollouts(results: List[Dict]) -> Dict[str, Dict]:
             for r in rollouts:
                 quality = calculate_salvage_quality(r)
 
+                # Skip rollouts below quality threshold
+                if quality < min_salvage_quality:
+                    continue
+
                 # Truncate to get token count of salvaged portion
                 processed = process_rollout(r)
                 original_guess_history = processed["info"].get("original_guess_history", r.get("guess_history", []))
@@ -191,6 +249,11 @@ def select_best_rollouts(results: List[Dict]) -> Dict[str, Dict]:
 
                 rollout_data.append((quality, tokens, r))
 
+            # If no rollouts meet the quality threshold, skip this puzzle
+            # (it will be treated as missing and started from scratch)
+            if not rollout_data:
+                continue
+
             # Sort by: highest salvage quality, then shortest tokens (after truncation)
             rollout_data.sort(key=lambda x: (-x[0], x[1]))
             best_rollouts[puzzle_id] = rollout_data[0][2]
@@ -200,10 +263,18 @@ def select_best_rollouts(results: List[Dict]) -> Dict[str, Dict]:
 
 def prep_phase(
     best_rollouts: Dict[str, Dict],
-    all_puzzle_ids: Set[str]
+    all_puzzle_ids: Set[str],
+    tokenizer = None,
+    token_limit: int = None
 ) -> Tuple[List[Dict], List[Dict], Set[str], Dict]:
     """
     Prep phase: Filter good/bad examples and prepare for generation.
+
+    Args:
+        best_rollouts: Dict mapping puzzle_id -> best rollout
+        all_puzzle_ids: Set of all puzzle IDs in train_sft
+        tokenizer: Optional tokenizer for enforcing token limits
+        token_limit: Optional max tokens per assistant message (after think wrapper)
 
     Returns:
         - good_examples: List of good rollouts
@@ -219,6 +290,12 @@ def prep_phase(
         # Process rollout (wrap in think tags)
         processed = process_rollout(rollout)
 
+        # If token limit is enabled, mark over-limit messages as invalid
+        if tokenizer is not None and token_limit is not None:
+            # Store original guess_history before modification
+            processed["info"]["original_guess_history"] = processed.get("guess_history", []).copy()
+            processed = mark_over_limit_as_invalid(processed, tokenizer, token_limit)
+
         if is_valid_guesses_only(processed) and is_won(processed):
             good_examples.append(processed)
         else:
@@ -229,7 +306,7 @@ def prep_phase(
     unsalvageable_puzzle_ids = set()
 
     for bad_example in bad_examples:
-        original_guess_history = bad_example["info"].get("original_guess_history", bad_example["guess_history"])
+        original_guess_history = bad_example["info"].get("original_guess_history", bad_example.get("guess_history", []))
         truncated = truncate_processed_rollout(bad_example, original_guess_history)
 
         if truncated and len(truncated.get("guess_history", [])) > 0:
@@ -326,7 +403,9 @@ async def run_evaluation_batch(
     results = await env.evaluate(
         client=client,
         model="deepseek-chat",
-        sampling_args={},
+        sampling_args={
+            "max_tokens": MAX_GENERATION_TOKENS - 6, # 6 tokens for the think wrapper
+        },
         num_examples=-1,
         rollouts_per_example=1,
         max_concurrent=32,
@@ -455,6 +534,18 @@ async def main():
         action="store_true",
         help="Dry run mode - analyze existing results without running evaluation"
     )
+    parser.add_argument(
+        "--token-limit",
+        type=int,
+        default=None,
+        help="Max tokens per assistant message (after think wrapper). Messages exceeding this are treated as invalid. Default: no limit"
+    )
+    parser.add_argument(
+        "--min-salvage-quality",
+        type=float,
+        default=0.0,
+        help="Minimum salvage quality score to use a rollout. Rollouts scoring below this are discarded and started from scratch. Default: 0.0"
+    )
     args = parser.parse_args()
 
     # Default to generate_results/ in the same directory as this script
@@ -473,6 +564,13 @@ async def main():
     # Load train_sft puzzle IDs once
     all_puzzle_ids = get_train_sft_puzzle_ids()
 
+    # Load tokenizer if token limit is enabled
+    tokenizer = None
+    if args.token_limit is not None:
+        print(f"\nToken limit enabled: {args.token_limit} tokens per assistant message")
+        print("Loading tokenizer (PrimeIntellect/Qwen3-4b)...")
+        tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-4b")
+
     prev_good_count = None
 
     for loop_num in range(1, args.loop + 1):
@@ -483,12 +581,12 @@ async def main():
         # 1. Load existing results
         print("\n[1/3] Loading existing results...")
         all_results = load_existing_results(results_dir)
-        best_rollouts = select_best_rollouts(all_results)
+        best_rollouts = select_best_rollouts(all_results, args.min_salvage_quality)
 
         # 2. Prep phase
         print("\n[2/3] Prep phase...")
         good_examples, salvageable_examples, missing_puzzle_ids, stats = prep_phase(
-            best_rollouts, all_puzzle_ids
+            best_rollouts, all_puzzle_ids, tokenizer, args.token_limit
         )
 
         # Print stats
@@ -531,8 +629,8 @@ async def main():
 
     # Load and display final stats
     all_results = load_existing_results(results_dir)
-    best_rollouts = select_best_rollouts(all_results)
-    _, _, _, final_stats = prep_phase(best_rollouts, all_puzzle_ids)
+    best_rollouts = select_best_rollouts(all_results, args.min_salvage_quality)
+    _, _, _, final_stats = prep_phase(best_rollouts, all_puzzle_ids, tokenizer, args.token_limit)
 
     print(f"Total Puzzles: {final_stats['total_puzzles']}")
     print(f"Good Examples: {final_stats['good']} ({final_stats['good']/final_stats['total_puzzles']*100:.1f}%)")
