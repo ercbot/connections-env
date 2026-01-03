@@ -36,6 +36,8 @@ def get_max_total_tokens_for_puzzle(result: Dict[str, Any]) -> int:
 def is_valid_guesses_only(result: Dict[str, Any]) -> bool:
     """Check if all guesses were valid (no invalid guesses)."""
     guess_history = result.get("guess_history", [])
+    if guess_history is None:
+        return False  # Treat None as invalid
     return not any(guess.get("status") == "invalid" for guess in guess_history)
 
 
@@ -166,22 +168,13 @@ def truncate_processed_rollout(
 
     Truncation logic:
     1. Remove all invalid guesses (and everything after the first invalid)
-    2. Check if the last remaining guess would cause the game to be lost
-       (i.e., if it's an incorrect guess that puts us at max_mistakes)
-    3. If so, remove that losing guess too
-    4. Keep all other guesses (including incorrect ones that don't cause a loss)
-
-    This ensures the doctored example can be completed successfully.
+    2. Remove all trailing incorrect/one_away guesses after the last correct guess
+    
+    This ensures we resume from the last point where the model made progress.
 
     Returns a new dict with the truncated completion.
     """
     completion = processed_result.get("completion", [])
-    info = processed_result.get("info", {})
-
-    # Get ruleset configuration to determine max_mistakes
-    # Default to NYT rules if not specified
-    from connections.rulesets import get_ruleset_config
-    ruleset_config = get_ruleset_config("nyt")
 
     # Step 1: Find first invalid guess and truncate before it
     first_invalid_idx = float('inf')
@@ -195,33 +188,15 @@ def truncate_processed_rollout(
     else:
         truncated_guess_history = original_guess_history.copy()
 
-    # Step 2: Simulate game state to check if last guess causes loss
-    # We need to count mistakes according to the ruleset rules
-    mistakes = 0
-    found_categories = 0
-    categories = info.get("categories", [])
-    total_categories = len(categories)
-
+    # Step 2: Find the last correct guess and remove all trailing incorrect/one_away guesses
+    last_correct_idx = -1
     for i, guess in enumerate(truncated_guess_history):
-        status = guess.get("status")
+        if guess.get("status") == "correct":
+            last_correct_idx = i
 
-        if status == "correct":
-            found_categories += 1
-        elif status in ["incorrect", "one_away"]:
-            # Check if we should count this mistake based on ruleset
-            remaining_categories = total_categories - found_categories
-            threshold = ruleset_config.mistakes_count_when_x_categories_remain
-
-            should_count = (threshold == "any") or (remaining_categories <= threshold)
-
-            if should_count:
-                mistakes += 1
-
-                # Check if this guess causes us to hit max_mistakes (game loss)
-                if mistakes >= ruleset_config.max_mistakes:
-                    # This is the losing guess - truncate before it
-                    truncated_guess_history = truncated_guess_history[:i]
-                    break
+    # If we found a correct guess, truncate after it (removing trailing failures)
+    if last_correct_idx >= 0:
+        truncated_guess_history = truncated_guess_history[:last_correct_idx + 1]
 
     # Step 3: Build truncated completion messages based on truncated_guess_history
     truncate_at = len(truncated_guess_history) - 1  # Index of last guess to keep

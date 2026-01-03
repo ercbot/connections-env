@@ -49,6 +49,41 @@ def calculate_avg_assistant_tokens(result: Dict) -> float:
     return (total_chars / 4) / len(assistant_messages)
 
 
+def calculate_max_cumulative_tokens(result: Dict, tokenizer) -> int:
+    """
+    Calculate the maximum cumulative token count reached at any point in the conversation.
+
+    This uses the tokenizer's chat template which automatically handles the
+    "last 2 messages only" logic for think tokens. We return the max because
+    if any point exceeds the limit, training will crash.
+
+    Args:
+        result: Rollout result dict
+        tokenizer: The tokenizer with chat template
+
+    Returns:
+        Maximum cumulative tokens reached at any message position
+    """
+    processed = process_rollout(result)
+    messages = processed.get('prompt', []) + processed.get('completion', [])
+
+    if not messages:
+        return 0
+
+    max_tokens = 0
+    for i in range(len(messages)):
+        messages_up_to_i = messages[:i + 1]
+        token_ids = tokenizer.apply_chat_template(
+            messages_up_to_i,
+            tokenize=True,
+            add_generation_prompt=False
+        )
+        cumulative_tokens = len(token_ids)
+        max_tokens = max(max_tokens, cumulative_tokens)
+
+    return max_tokens
+
+
 def calculate_salvage_quality(result: Dict) -> float:
     """
     Calculate salvage quality score with exponentially decaying weights by position.
@@ -185,18 +220,18 @@ def get_train_sft_puzzle_ids() -> Set[str]:
     return puzzle_ids
 
 
-def select_best_rollouts(results: List[Dict], min_salvage_quality: float = 0.0) -> Dict[str, Dict]:
+def select_best_rollouts(results: List[Dict], min_salvage_quality: float = 0.0, tokenizer=None) -> Dict[str, Dict]:
     """
     Group results by puzzle_id and select the best rollout for each.
 
     Selection criteria for valid+won rollouts (in order):
     1. Valid guesses only (no invalid guesses) AND won the game
     2. Highest reward
-    3. Shortest average assistant message tokens
+    3. Shortest max cumulative tokens (if tokenizer provided), else shortest avg assistant message tokens
 
     Selection criteria for non-valid/won rollouts (in order):
     1. Highest salvage quality (exponentially weighted correct guesses)
-    2. Shortest average assistant message tokens (after truncation)
+    2. Shortest max cumulative tokens (if tokenizer provided), else shortest avg assistant message tokens (after truncation)
 
     Rollouts with salvage quality below min_salvage_quality are discarded
     (treated as if no rollout exists for that puzzle).
@@ -205,6 +240,8 @@ def select_best_rollouts(results: List[Dict], min_salvage_quality: float = 0.0) 
         results: List of rollout results
         min_salvage_quality: Minimum salvage quality score to consider a rollout usable.
                             Rollouts scoring below this are discarded. Default: 0.0
+        tokenizer: Optional tokenizer for accurate max cumulative token counting.
+                  If None, uses character-based proxy for efficiency.
 
     Returns:
         Dict mapping puzzle_id -> best rollout
@@ -223,9 +260,27 @@ def select_best_rollouts(results: List[Dict], min_salvage_quality: float = 0.0) 
 
         if valid_won:
             # Pick best valid+won rollout
-            # Sort by: highest reward, then shortest tokens
-            valid_won.sort(key=lambda r: (-r["reward"], calculate_avg_assistant_tokens(r)))
-            best_rollouts[puzzle_id] = valid_won[0]
+            # Group by reward first
+            reward_groups = defaultdict(list)
+            for r in valid_won:
+                reward_groups[r["reward"]].append(r)
+
+            # Get the highest reward group
+            best_reward = max(reward_groups.keys())
+            candidates = reward_groups[best_reward]
+
+            # If only one candidate, select it without tokenizing
+            if len(candidates) == 1:
+                best_rollouts[puzzle_id] = candidates[0]
+            else:
+                # Multiple candidates with same reward - use token count as tiebreaker
+                if tokenizer is not None:
+                    # Use actual max cumulative tokens
+                    candidates.sort(key=lambda r: calculate_max_cumulative_tokens(r, tokenizer))
+                else:
+                    # Use cheap proxy
+                    candidates.sort(key=lambda r: calculate_avg_assistant_tokens(r))
+                best_rollouts[puzzle_id] = candidates[0]
         else:
             # Pick best rollout for potential doctoring
             # For each rollout, calculate salvage quality and truncate once
@@ -237,26 +292,52 @@ def select_best_rollouts(results: List[Dict], min_salvage_quality: float = 0.0) 
                 if quality < min_salvage_quality:
                     continue
 
-                # Truncate to get token count of salvaged portion
-                processed = process_rollout(r)
-                original_guess_history = processed["info"].get("original_guess_history", r.get("guess_history", []))
-                truncated = truncate_processed_rollout(processed, original_guess_history)
-
-                if truncated:
-                    tokens = calculate_avg_assistant_tokens(truncated)
-                else:
-                    tokens = calculate_avg_assistant_tokens(r)
-
-                rollout_data.append((quality, tokens, r))
+                rollout_data.append((quality, r))
 
             # If no rollouts meet the quality threshold, skip this puzzle
             # (it will be treated as missing and started from scratch)
             if not rollout_data:
                 continue
 
-            # Sort by: highest salvage quality, then shortest tokens (after truncation)
-            rollout_data.sort(key=lambda x: (-x[0], x[1]))
-            best_rollouts[puzzle_id] = rollout_data[0][2]
+            # Group by salvage quality
+            quality_groups = defaultdict(list)
+            for quality, r in rollout_data:
+                quality_groups[quality].append(r)
+
+            # Get the highest quality group
+            best_quality = max(quality_groups.keys())
+            candidates = quality_groups[best_quality]
+
+            # If only one candidate, select it without tokenizing
+            if len(candidates) == 1:
+                best_rollouts[puzzle_id] = candidates[0]
+            else:
+                # Multiple candidates with same quality - use token count as tiebreaker
+                # Calculate tokens for truncated rollouts
+                candidate_tokens = []
+                for r in candidates:
+                    processed = process_rollout(r)
+                    original_guess_history = processed["info"].get("original_guess_history", r.get("guess_history", []))
+                    truncated = truncate_processed_rollout(processed, original_guess_history)
+
+                    if tokenizer is not None:
+                        # Use actual max cumulative tokens
+                        if truncated:
+                            tokens = calculate_max_cumulative_tokens(truncated, tokenizer)
+                        else:
+                            tokens = calculate_max_cumulative_tokens(r, tokenizer)
+                    else:
+                        # Use cheap proxy
+                        if truncated:
+                            tokens = calculate_avg_assistant_tokens(truncated)
+                        else:
+                            tokens = calculate_avg_assistant_tokens(r)
+
+                    candidate_tokens.append((tokens, r))
+
+                # Sort by shortest tokens
+                candidate_tokens.sort(key=lambda x: x[0])
+                best_rollouts[puzzle_id] = candidate_tokens[0][1]
 
     return best_rollouts
 
@@ -568,8 +649,8 @@ async def main():
     tokenizer = None
     if args.token_limit is not None:
         print(f"\nToken limit enabled: {args.token_limit} tokens per assistant message")
-        print("Loading tokenizer (PrimeIntellect/Qwen3-4b)...")
-        tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-4b")
+        print("Loading tokenizer (ericbotti/GLM-4.6V-Flash)...")
+        tokenizer = AutoTokenizer.from_pretrained("ericbotti/GLM-4.6V-Flash")
 
     prev_good_count = None
 
@@ -581,7 +662,7 @@ async def main():
         # 1. Load existing results
         print("\n[1/3] Loading existing results...")
         all_results = load_existing_results(results_dir)
-        best_rollouts = select_best_rollouts(all_results, args.min_salvage_quality)
+        best_rollouts = select_best_rollouts(all_results, args.min_salvage_quality, tokenizer)
 
         # 2. Prep phase
         print("\n[2/3] Prep phase...")
@@ -629,7 +710,7 @@ async def main():
 
     # Load and display final stats
     all_results = load_existing_results(results_dir)
-    best_rollouts = select_best_rollouts(all_results, args.min_salvage_quality)
+    best_rollouts = select_best_rollouts(all_results, args.min_salvage_quality, tokenizer)
     _, _, _, final_stats = prep_phase(best_rollouts, all_puzzle_ids, tokenizer, args.token_limit)
 
     print(f"Total Puzzles: {final_stats['total_puzzles']}")
