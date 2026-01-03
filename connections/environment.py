@@ -37,7 +37,8 @@ class ConnectionsEnv(MultiTurnEnv):
         dataset: Dataset | None = None,
         eval_dataset: Dataset | None = None,
         system_prompt: str | None = None,
-        are_datasets_raw: bool = True,
+        is_dataset_raw_puzzles: bool = True,
+        is_eval_dataset_raw_puzzles: bool = True,
         max_turns: int = 10,
         **kwargs,
     ):
@@ -52,8 +53,9 @@ class ConnectionsEnv(MultiTurnEnv):
         if eval_dataset is None:
             eval_dataset = load_dataset("ericbotti/connections-puzzles", split="test")
 
-        if are_datasets_raw:
+        if is_dataset_raw_puzzles:
             dataset = prep_dataset(dataset, self.ruleset_config)
+        if is_eval_dataset_raw_puzzles:
             eval_dataset = prep_dataset(eval_dataset, self.ruleset_config)
 
         # Use provided system prompt or generate one using ruleset configuration
