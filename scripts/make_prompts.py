@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Script to generate prompts to files for different Connections rulesets.
-Uses the PrimeIntellect/Qwen3-4B tokenizer to measure token counts.
+Uses the ericbotti/GLM-4.6V-Flash tokenizer to measure token counts.
 Generates both system and game_start prompts for each ruleset.
 """
 
@@ -55,7 +55,7 @@ token_count: {token_count}
 
 
 def main():
-    tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-4B")
+    tokenizer = AutoTokenizer.from_pretrained("ericbotti/GLM-4.6V-Flash")
 
     # Load the first puzzle from train_sft for game_start prompt generation
     print("Loading train_sft dataset...")
