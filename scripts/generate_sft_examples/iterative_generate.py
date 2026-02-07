@@ -22,7 +22,10 @@ from typing import Dict, List, Set, Tuple
 from datasets import Dataset, load_dataset
 from transformers import AutoTokenizer
 
+from connections.dataset import format_puzzle
 from connections.environment import ConnectionsEnv
+from connections.prompts import generate_system_prompt
+from connections.rulesets import get_ruleset_config
 from token_counting_utils import (
     calculate_max_cumulative_tokens,
     mark_over_limit_as_invalid,
@@ -350,24 +353,40 @@ def create_truncated_example(truncated_rollout: Dict) -> Dict:
     return result
 
 
-def create_fresh_example(raw_puzzle: Dict) -> Dict:
+def create_fresh_examples(raw_puzzles: List[Dict], ruleset_config) -> List[Dict]:
     """
-    Convert a raw puzzle to the format expected when are_datasets_raw=False.
-    This creates an initial example ready for evaluation.
+    Convert raw puzzles to the format expected when are_datasets_raw=False.
+
+    Uses format_puzzle from the library to build the 'categories' and 'info' fields,
+    ensuring the schema matches salvaged examples. This is necessary because
+    Dataset.from_list() unifies schemas, and missing fields get filled with None.
+
+    Also builds the initial prompt (system + user question) since the verifiers
+    library skips prompt generation when a 'prompt' column already exists.
     """
-    return {
-        "prompt": [],
-        "info": raw_puzzle,
-        "guess_history": [],
-        "example_id": int(raw_puzzle["puzzle_id"]),
-    }
+    system_prompt = generate_system_prompt(ruleset_config)
+    results = []
+    for raw_puzzle in raw_puzzles:
+        formatted = format_puzzle(raw_puzzle, ruleset_config)
+        prompt = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": formatted["question"]},
+        ]
+        results.append({
+            "prompt": prompt,
+            "info": formatted["info"],
+            "guess_history": [],
+            "example_id": int(formatted["info"]["puzzle_id"]),
+        })
+    return results
 
 
 async def run_evaluation_batch(
     examples: List[Dict],
     are_datasets_raw: bool,
     raw_dir: Path,
-    client
+    client,
+    model: str,
 ) -> int:
     """Helper function to run evaluation on a batch of examples."""
     if not examples:
@@ -394,7 +413,7 @@ async def run_evaluation_batch(
 
     results = await env.evaluate(
         client=client,
-        model="deepseek-chat",
+        model=model,
         sampling_args={
             "max_tokens": MAX_GENERATION_TOKENS - 6, # 6 tokens for the think wrapper
         },
@@ -414,7 +433,8 @@ async def generate_phase(
     salvageable_examples: List[Dict],
     missing_puzzle_ids: Set[str],
     results_dir: Path,
-    iteration: int
+    iteration: int,
+    model: str = "deepseek-chat",
 ) -> Tuple[Path, int]:
     """
     Generate phase: Create dataset and run evaluation.
@@ -428,7 +448,8 @@ async def generate_phase(
     if missing_puzzle_ids:
         full_dataset = load_dataset("ericbotti/connections-puzzles", split="train_sft")
         raw_puzzles = [ex for ex in full_dataset if ex["puzzle_id"] in missing_puzzle_ids]
-        fresh_examples = [create_fresh_example(puzzle) for puzzle in raw_puzzles]
+        ruleset_config = get_ruleset_config("nyt")
+        fresh_examples = create_fresh_examples(raw_puzzles, ruleset_config)
 
     if not salvageable_examples and not fresh_examples:
         print("No puzzles to run!")
@@ -444,7 +465,7 @@ async def generate_phase(
     raw_dir.mkdir(parents=True, exist_ok=True)
 
     # Create client once
-    client = create_client()
+    client = create_client(model)
 
     try:
         # Run all examples in a single batch (are_datasets_raw=False)
@@ -452,7 +473,8 @@ async def generate_phase(
             all_examples,
             are_datasets_raw=False,
             raw_dir=raw_dir,
-            client=client
+            client=client,
+            model=model,
         )
         print(f"Completed {completed} rollouts")
 
@@ -522,6 +544,12 @@ async def main():
         type=float,
         default=0.0,
         help="Minimum salvage quality score to use a rollout. Rollouts scoring below this are discarded and started from scratch. Default: 0.0"
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="deepseek-chat",
+        help="Model to use for generation. Supported: deepseek-chat, deepseek-reasoner, or any OpenAI model (e.g. gpt-4o). Default: deepseek-chat"
     )
     args = parser.parse_args()
 
@@ -593,7 +621,8 @@ async def main():
             salvageable_examples,
             missing_puzzle_ids,
             results_dir,
-            next_iteration
+            next_iteration,
+            model=args.model,
         )
 
         prev_good_count = stats["good"]

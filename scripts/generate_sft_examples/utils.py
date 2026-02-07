@@ -243,9 +243,32 @@ def copy_raw_results_to_output(
     return False
 
 
-def create_client():
-    """Get a client for the LLM."""
+MODEL_PROVIDERS = {
+    "deepseek-chat": {
+        "api_key_env": "DEEPSEEK_API_KEY",
+        "base_url": "https://api.deepseek.com/v1",
+    },
+    "deepseek-reasoner": {
+        "api_key_env": "DEEPSEEK_API_KEY",
+        "base_url": "https://api.deepseek.com/v1",
+    },
+}
+
+# Models not in MODEL_PROVIDERS are assumed to be OpenAI models
+OPENAI_DEFAULT = {
+    "api_key_env": "OPENAI_API_KEY",
+}
+
+
+def create_client(model: str) -> AsyncOpenAI:
+    """Get a client for the given model."""
+    if model in MODEL_PROVIDERS:
+        provider = MODEL_PROVIDERS[model]
+        return AsyncOpenAI(
+            api_key=os.getenv(provider["api_key_env"]),
+            base_url=provider["base_url"],
+        )
+    # Default to OpenAI
     return AsyncOpenAI(
-        api_key=os.getenv("DEEPSEEK_API_KEY"),
-        base_url="https://api.deepseek.com/v1",
+        api_key=os.getenv(OPENAI_DEFAULT["api_key_env"]),
     )
