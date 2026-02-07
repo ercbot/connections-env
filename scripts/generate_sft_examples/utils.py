@@ -10,29 +10,6 @@ from typing import Dict, Any, List, Optional, Set, Tuple
 
 from openai import AsyncOpenAI
 
-
-# Token limits
-MAX_TOTAL_TOKENS = 2048
-MAX_GENERATION_TOKENS = 1024
-
-
-def get_num_words_in_puzzle(result: Dict[str, Any]) -> int:
-    """Get the total number of words in the puzzle."""
-    categories = result.get("info", {}).get("categories", [])
-    total_words = sum(len(cat.get("members", [])) for cat in categories)
-    return total_words
-
-
-def get_max_total_tokens_for_puzzle(result: Dict[str, Any]) -> int:
-    """Get the max total tokens limit based on puzzle size."""
-    num_words = get_num_words_in_puzzle(result)
-    if num_words <= 16:
-        return MAX_TOTAL_TOKENS  # 2048 for standard puzzles
-    else:
-        # Dynamic limit for larger puzzles, capped at 3072
-        return min(3072, 128 * num_words)
-
-
 def is_valid_guesses_only(result: Dict[str, Any]) -> bool:
     """Check if all guesses were valid (no invalid guesses)."""
     guess_history = result.get("guess_history", [])
@@ -45,36 +22,6 @@ def is_won(result: Dict[str, Any]) -> bool:
     """Check if the game was won."""
     winning_reasons = ["all_categories_found", "theme_guessing_complete"]
     return result.get("complete_reason") in winning_reasons
-
-
-def calculate_token_metrics(result: Dict[str, Any], tokenizer) -> tuple[int, int]:
-    """
-    Calculate token metrics for a rollout.
-
-    Returns:
-        (total_tokens, max_generation_tokens)
-        - total_tokens: Total tokens excluding last message if not assistant
-        - max_generation_tokens: Maximum tokens in any single assistant message
-    """
-    completion = result.get("completion", [])
-
-    # Calculate total tokens (excluding last message if not assistant)
-    messages_for_total = completion
-    if messages_for_total and messages_for_total[-1].get("role") != "assistant":
-        messages_for_total = messages_for_total[:-1]
-
-    total_tokens = 0
-    max_generation_tokens = 0
-
-    for msg in messages_for_total:
-        msg_tokens = len(tokenizer.encode(msg["content"]))
-        total_tokens += msg_tokens
-
-        # Track max for assistant messages
-        if msg.get("role") == "assistant":
-            max_generation_tokens = max(max_generation_tokens, msg_tokens)
-
-    return total_tokens, max_generation_tokens
 
 
 def wrap_reasoning_in_tags(content: str) -> str:

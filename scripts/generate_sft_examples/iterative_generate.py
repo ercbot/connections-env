@@ -23,65 +23,20 @@ from datasets import Dataset, load_dataset
 from transformers import AutoTokenizer
 
 from connections.environment import ConnectionsEnv
+from token_counting_utils import (
+    calculate_max_cumulative_tokens,
+    mark_over_limit_as_invalid,
+    MAX_GENERATION_TOKENS,
+    MAX_TOTAL_TOKENS,
+    TOKENIZER_NAME,
+)
 from utils import (
     create_client,
     is_valid_guesses_only,
     is_won,
     process_rollout,
     truncate_processed_rollout,
-    MAX_GENERATION_TOKENS,
 )
-
-
-def calculate_avg_assistant_tokens(result: Dict) -> float:
-    """
-    Calculate a simple proxy for average assistant message length.
-    Uses character count instead of tokens for simplicity.
-    """
-    completion = result.get("completion", [])
-    assistant_messages = [msg["content"] for msg in completion if msg.get("role") == "assistant"]
-
-    if not assistant_messages:
-        return 0.0
-
-    total_chars = sum(len(msg) for msg in assistant_messages)
-    # Rough approximation: 1 token ≈ 4 characters
-    return (total_chars / 4) / len(assistant_messages)
-
-
-def calculate_max_cumulative_tokens(result: Dict, tokenizer) -> int:
-    """
-    Calculate the maximum cumulative token count reached at any point in the conversation.
-
-    This uses the tokenizer's chat template which automatically handles the
-    "last 2 messages only" logic for think tokens. We return the max because
-    if any point exceeds the limit, training will crash.
-
-    Args:
-        result: Rollout result dict
-        tokenizer: The tokenizer with chat template
-
-    Returns:
-        Maximum cumulative tokens reached at any message position
-    """
-    processed = process_rollout(result)
-    messages = processed.get('prompt', []) + processed.get('completion', [])
-
-    if not messages:
-        return 0
-
-    max_tokens = 0
-    for i in range(len(messages)):
-        messages_up_to_i = messages[:i + 1]
-        token_ids = tokenizer.apply_chat_template(
-            messages_up_to_i,
-            tokenize=True,
-            add_generation_prompt=False
-        )
-        cumulative_tokens = len(token_ids)
-        max_tokens = max(max_tokens, cumulative_tokens)
-
-    return max_tokens
 
 
 def calculate_salvage_quality(result: Dict) -> float:
@@ -136,50 +91,6 @@ def calculate_salvage_quality(result: Dict) -> float:
             mistake_count += 1
 
     return score
-
-
-def mark_over_limit_as_invalid(result: Dict, tokenizer, token_limit: int) -> Dict:
-    """
-    Mark any assistant message that exceeds token_limit as invalid.
-    
-    This simulates treating >token_limit as an invalid guess, which allows
-    the salvage logic to potentially truncate and doctor the rollout.
-    
-    Args:
-        result: Rollout result dict with "completion" and "guess_history"
-        tokenizer: transformers tokenizer
-        token_limit: Maximum tokens allowed per assistant message
-        
-    Returns:
-        Modified result with over-limit guesses marked as invalid
-    """
-    result = result.copy()
-    completion = result.get("completion", [])
-    guess_history = result.get("guess_history", [])
-    
-    # If no guess_history, return as-is
-    if not guess_history:
-        return result
-    
-    guess_history = guess_history.copy()
-    
-    # Find which assistant messages exceed the limit
-    assistant_idx = 0
-    for msg in completion:
-        if msg.get("role") == "assistant":
-            content = msg.get("content", "")
-            tokens = len(tokenizer.encode(content))
-            
-            # If this message exceeds limit, mark corresponding guess as invalid
-            if tokens > token_limit and assistant_idx < len(guess_history):
-                guess_history[assistant_idx] = guess_history[assistant_idx].copy()
-                guess_history[assistant_idx]["status"] = "invalid"
-                guess_history[assistant_idx]["invalid_reason"] = f"over_token_limit_{tokens}"
-            
-            assistant_idx += 1
-    
-    result["guess_history"] = guess_history
-    return result
 
 
 def load_existing_results(results_dir: Path) -> List[Dict]:
@@ -274,12 +185,7 @@ def select_best_rollouts(results: List[Dict], min_salvage_quality: float = 0.0, 
                 best_rollouts[puzzle_id] = candidates[0]
             else:
                 # Multiple candidates with same reward - use token count as tiebreaker
-                if tokenizer is not None:
-                    # Use actual max cumulative tokens
-                    candidates.sort(key=lambda r: calculate_max_cumulative_tokens(r, tokenizer))
-                else:
-                    # Use cheap proxy
-                    candidates.sort(key=lambda r: calculate_avg_assistant_tokens(r))
+                candidates.sort(key=lambda r: calculate_max_cumulative_tokens(r, tokenizer))
                 best_rollouts[puzzle_id] = candidates[0]
         else:
             # Pick best rollout for potential doctoring
@@ -320,18 +226,11 @@ def select_best_rollouts(results: List[Dict], min_salvage_quality: float = 0.0, 
                     original_guess_history = processed["info"].get("original_guess_history", r.get("guess_history", []))
                     truncated = truncate_processed_rollout(processed, original_guess_history)
 
-                    if tokenizer is not None:
-                        # Use actual max cumulative tokens
-                        if truncated:
-                            tokens = calculate_max_cumulative_tokens(truncated, tokenizer)
-                        else:
-                            tokens = calculate_max_cumulative_tokens(r, tokenizer)
+                    # Use actual max cumulative tokens
+                    if truncated:
+                        tokens = calculate_max_cumulative_tokens(truncated, tokenizer)
                     else:
-                        # Use cheap proxy
-                        if truncated:
-                            tokens = calculate_avg_assistant_tokens(truncated)
-                        else:
-                            tokens = calculate_avg_assistant_tokens(r)
+                        tokens = calculate_max_cumulative_tokens(r, tokenizer)
 
                     candidate_tokens.append((tokens, r))
 
@@ -371,11 +270,10 @@ def prep_phase(
         # Process rollout (wrap in think tags)
         processed = process_rollout(rollout)
 
-        # If token limit is enabled, mark over-limit messages as invalid
-        if tokenizer is not None and token_limit is not None:
-            # Store original guess_history before modification
-            processed["info"]["original_guess_history"] = processed.get("guess_history", []).copy()
-            processed = mark_over_limit_as_invalid(processed, tokenizer, token_limit)
+        # Mark over-limit messages as invalid (both per-message and cumulative limits)
+        # Store original guess_history before modification
+        processed["info"]["original_guess_history"] = processed.get("guess_history", []).copy()
+        processed = mark_over_limit_as_invalid(processed, tokenizer, token_limit, MAX_TOTAL_TOKENS)
 
         if is_valid_guesses_only(processed) and is_won(processed):
             good_examples.append(processed)
@@ -452,6 +350,19 @@ def create_truncated_example(truncated_rollout: Dict) -> Dict:
     return result
 
 
+def create_fresh_example(raw_puzzle: Dict) -> Dict:
+    """
+    Convert a raw puzzle to the format expected when are_datasets_raw=False.
+    This creates an initial example ready for evaluation.
+    """
+    return {
+        "prompt": [],
+        "info": raw_puzzle,
+        "guess_history": [],
+        "example_id": int(raw_puzzle["puzzle_id"]),
+    }
+
+
 async def run_evaluation_batch(
     examples: List[Dict],
     are_datasets_raw: bool,
@@ -512,17 +423,21 @@ async def generate_phase(
         - output_file: Path to the new results file
         - num_puzzles_run: Number of puzzles evaluated
     """
-    # Load fresh puzzles for missing IDs
-    fresh_puzzles = []
+    # Load fresh puzzles for missing IDs and convert to same format as salvageable
+    fresh_examples = []
     if missing_puzzle_ids:
         full_dataset = load_dataset("ericbotti/connections-puzzles", split="train_sft")
-        fresh_puzzles = [ex for ex in full_dataset if ex["puzzle_id"] in missing_puzzle_ids]
+        raw_puzzles = [ex for ex in full_dataset if ex["puzzle_id"] in missing_puzzle_ids]
+        fresh_examples = [create_fresh_example(puzzle) for puzzle in raw_puzzles]
 
-    if not salvageable_examples and not fresh_puzzles:
+    if not salvageable_examples and not fresh_examples:
         print("No puzzles to run!")
         return None, 0
 
-    print(f"Running evaluation on {len(salvageable_examples) + len(fresh_puzzles)} puzzles ({len(salvageable_examples)} salvaged, {len(fresh_puzzles)} fresh)")
+    # Combine all examples into a single batch
+    all_examples = salvageable_examples + fresh_examples
+
+    print(f"Running evaluation on {len(all_examples)} puzzles ({len(salvageable_examples)} salvaged, {len(fresh_examples)} fresh)")
 
     # Setup output
     raw_dir = results_dir / "raw"
@@ -531,34 +446,15 @@ async def generate_phase(
     # Create client once
     client = create_client()
 
-    total_completed = 0
-
     try:
-        # Run salvaged examples first (are_datasets_raw=False)
-        if salvageable_examples:
-            print(f"  Running {len(salvageable_examples)} salvaged examples...")
-            completed = await run_evaluation_batch(
-                salvageable_examples,
-                are_datasets_raw=False,
-                raw_dir=raw_dir,
-                client=client
-            )
-            total_completed += completed
-            print(f"  Completed {completed} salvaged rollouts")
-
-        # Then run fresh puzzles (are_datasets_raw=True)
-        if fresh_puzzles:
-            print(f"  Running {len(fresh_puzzles)} fresh puzzles...")
-            completed = await run_evaluation_batch(
-                fresh_puzzles,
-                are_datasets_raw=True,
-                raw_dir=raw_dir,
-                client=client
-            )
-            total_completed += completed
-            print(f"  Completed {completed} fresh rollouts")
-
-        print(f"Total completed: {total_completed} rollouts")
+        # Run all examples in a single batch (are_datasets_raw=False)
+        completed = await run_evaluation_batch(
+            all_examples,
+            are_datasets_raw=False,
+            raw_dir=raw_dir,
+            client=client
+        )
+        print(f"Completed {completed} rollouts")
 
     except Exception as e:
         print(f"Error during evaluation: {e}")
@@ -579,7 +475,7 @@ async def generate_phase(
         print(f"Warning: No results file found at {raw_output}")
         return None, 0
 
-    return output_file, len(salvageable_examples) + len(fresh_puzzles)
+    return output_file, len(all_examples)
 
 
 def print_loop_stats(loop_num: int, stats: Dict, prev_good: int = None, puzzles_run: int = None):
@@ -618,8 +514,8 @@ async def main():
     parser.add_argument(
         "--token-limit",
         type=int,
-        default=None,
-        help="Max tokens per assistant message (after think wrapper). Messages exceeding this are treated as invalid. Default: no limit"
+        default=MAX_GENERATION_TOKENS,
+        help=f"Max tokens per assistant message (after think wrapper). Messages exceeding this are treated as invalid. Default: {MAX_GENERATION_TOKENS}"
     )
     parser.add_argument(
         "--min-salvage-quality",
@@ -645,12 +541,10 @@ async def main():
     # Load train_sft puzzle IDs once
     all_puzzle_ids = get_train_sft_puzzle_ids()
 
-    # Load tokenizer if token limit is enabled
-    tokenizer = None
-    if args.token_limit is not None:
-        print(f"\nToken limit enabled: {args.token_limit} tokens per assistant message")
-        print("Loading tokenizer (ericbotti/GLM-4.6V-Flash)...")
-        tokenizer = AutoTokenizer.from_pretrained("ericbotti/GLM-4.6V-Flash")
+    # Load tokenizer (always required for token counting)
+    print(f"Loading tokenizer ({TOKENIZER_NAME})...")
+    tokenizer = AutoTokenizer.from_pretrained(TOKENIZER_NAME)
+    print(f"Token limit: {args.token_limit} tokens per assistant message")
 
     prev_good_count = None
 
