@@ -35,6 +35,7 @@ from token_counting_utils import (
 )
 from utils import (
     create_client,
+    is_structurally_valid,
     is_valid_guesses_only,
     is_won,
     process_rollout,
@@ -278,7 +279,7 @@ def prep_phase(
         processed["info"]["original_guess_history"] = processed.get("guess_history", []).copy()
         processed = mark_over_limit_as_invalid(processed, tokenizer, token_limit, MAX_TOTAL_TOKENS)
 
-        if is_valid_guesses_only(processed) and is_won(processed):
+        if is_valid_guesses_only(processed) and is_won(processed) and is_structurally_valid(processed):
             good_examples.append(processed)
         else:
             bad_examples.append(processed)
@@ -288,7 +289,7 @@ def prep_phase(
     unsalvageable_puzzle_ids = set()
 
     for bad_example in bad_examples:
-        original_guess_history = bad_example["info"].get("original_guess_history", bad_example.get("guess_history", []))
+        original_guess_history = bad_example["info"].get("original_guess_history") or bad_example.get("guess_history") or []
         truncated = truncate_processed_rollout(bad_example, original_guess_history)
 
         if truncated and len(truncated.get("guess_history", [])) > 0:
@@ -335,6 +336,7 @@ def create_truncated_example(truncated_rollout: Dict) -> Dict:
     # Store the truncated guess_history in info for environment reconstruction
     truncated_guess_history = truncated_rollout.get("guess_history", [])
     info = truncated_rollout.get("info", {}).copy()
+    info.pop("original_guess_history", None)  # Internal field, don't leak into Dataset
     info["resumed_from_guess_history"] = truncated_guess_history
 
     # Create ONLY the fields we need - don't copy everything from truncated_rollout

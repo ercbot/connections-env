@@ -24,6 +24,26 @@ def is_won(result: Dict[str, Any]) -> bool:
     return result.get("complete_reason") in winning_reasons
 
 
+def is_structurally_valid(result: Dict[str, Any]) -> bool:
+    """
+    Check that assistant message count matches non-auto guess count.
+
+    For resumed/doctored rollouts, earlier assistant messages may live in
+    the prompt, so we count across both prompt and completion.
+    """
+    prompt = result.get("prompt", [])
+    completion = result.get("completion", [])
+    guess_history = result.get("guess_history", [])
+
+    all_assistant_msgs = [
+        m for m in prompt + completion if m.get("role") == "assistant"
+    ]
+    non_auto_guesses = [
+        g for g in guess_history if g.get("status") != "auto"
+    ]
+    return len(all_assistant_msgs) == len(non_auto_guesses)
+
+
 def wrap_reasoning_in_tags(content: str) -> str:
     """
     Wrap all parts of the assistant message before <guess> tags in <think> tags.
@@ -55,14 +75,47 @@ def wrap_reasoning_in_tags(content: str) -> str:
         return f"<guess>{guess_and_rest}"
 
 
+def normalize_prompt_completion(result: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Normalize a rollout so that only system + initial user message stay in the
+    prompt, and all subsequent conversation messages are in the completion.
+
+    For doctored/resumed rollouts, earlier assistant+user turns get moved into
+    the prompt by create_truncated_example. This causes indexing mismatches in
+    downstream functions (mark_over_limit_as_invalid, truncate_processed_rollout)
+    that assume completion assistant messages align 1:1 with guess_history entries.
+
+    Normalizing here ensures a consistent layout regardless of how many times
+    a rollout has been doctored.
+    """
+    prompt = result.get("prompt", [])
+    completion = result.get("completion", [])
+
+    # Find the split point: keep system + first user message in prompt
+    split = 0
+    for i, msg in enumerate(prompt):
+        split = i + 1
+        if msg.get("role") == "user":
+            break
+
+    normalized = result.copy()
+    normalized["prompt"] = prompt[:split]
+    normalized["completion"] = prompt[split:] + completion
+    # Deep copy info so downstream mutations don't leak back to the original
+    if "info" in normalized:
+        normalized["info"] = normalized["info"].copy()
+    return normalized
+
+
 def process_rollout(result: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Process a rollout by wrapping assistant reasoning in <think> tags.
+    Process a rollout by normalizing prompt/completion split and wrapping
+    assistant reasoning in <think> tags.
 
     Returns a new dict with the processed completion messages.
     """
-    processed = result.copy()
-    completion = result.get("completion", [])
+    processed = normalize_prompt_completion(result)
+    completion = processed.get("completion", [])
 
     processed_completion = []
     for msg in completion:
