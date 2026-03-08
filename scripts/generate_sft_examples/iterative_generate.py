@@ -116,14 +116,19 @@ def load_existing_results(results_dir: Path) -> List[Dict]:
 
     print(f"Loading {len(result_files)} result files...")
 
+    skipped = 0
     for result_file in result_files:
         with open(result_file, 'r') as f:
             for line in f:
                 if line.strip():
                     result = json.loads(line)
+                    # Skip failed rollouts where the environment never ran
+                    if result.get("guess_history") is None:
+                        skipped += 1
+                        continue
                     all_results.append(result)
 
-    print(f"Loaded {len(all_results)} total rollouts")
+    print(f"Loaded {len(all_results)} total rollouts" + (f" (skipped {skipped} failed)" if skipped else ""))
     return all_results
 
 

@@ -13,6 +13,7 @@ Usage:
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Dict, Any, List
@@ -27,7 +28,7 @@ from token_counting_utils import (
     calculate_max_cumulative_tokens,
     mark_over_limit_as_invalid,
 )
-from utils import is_valid_guesses_only, is_won, process_rollout
+from utils import is_valid_guesses_only, is_won, process_rollout, unwrap_reasoning_from_tags
 
 
 def calculate_accuracy(guess_history: list) -> float:
@@ -167,6 +168,17 @@ def collate(
     return validated
 
 
+def synthesize_message(msg: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert a message to final format, splitting think tags into reasoning_content."""
+    if msg.get("role") != "assistant":
+        return msg
+    reasoning_content, content = unwrap_reasoning_from_tags(msg.get("content", ""))
+    result = {"role": "assistant", "content": content}
+    if reasoning_content:
+        result["reasoning_content"] = reasoning_content
+    return result
+
+
 def synthesize_example(example: Dict[str, Any]) -> Dict[str, Any]:
     """Convert a processed example to the final dataset format."""
     guess_history = example.get("guess_history", [])
@@ -175,7 +187,7 @@ def synthesize_example(example: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "puzzle_id": info.get("puzzle_id", "unknown"),
         "prompt": example.get("prompt", []),
-        "completion": example.get("completion", []),
+        "completion": [synthesize_message(m) for m in example.get("completion", [])],
         "accuracy": calculate_accuracy(guess_history),
         "guess_history": guess_history,
         "categories": info.get("categories", []),

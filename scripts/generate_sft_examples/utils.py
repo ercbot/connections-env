@@ -44,6 +44,22 @@ def is_structurally_valid(result: Dict[str, Any]) -> bool:
     return len(all_assistant_msgs) == len(non_auto_guesses)
 
 
+def unwrap_reasoning_from_tags(content: str) -> tuple[str, str]:
+    """
+    Inverse of wrap_reasoning_in_tags. Splits assistant message content into
+    (reasoning_content, content) by extracting the <think>...</think> block.
+
+    Returns:
+        (reasoning_content, content) where reasoning_content is the text inside
+        <think> tags (empty string if none), and content is the remainder.
+    """
+    import re
+    match = re.search(r"<think>(.*?)</think>\s*", content, re.DOTALL)
+    if match:
+        return match.group(1).strip(), content[match.end():].strip()
+    return "", content.strip()
+
+
 def wrap_reasoning_in_tags(content: str) -> str:
     """
     Wrap all parts of the assistant message before <guess> tags in <think> tags.

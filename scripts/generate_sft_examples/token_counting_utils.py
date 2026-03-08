@@ -74,14 +74,13 @@ def mark_over_limit_as_invalid(result: Dict, tokenizer, token_limit: int, max_to
     Returns:
         Modified result with over-limit guesses marked as invalid
     """
-    import re
+    from utils import unwrap_reasoning_from_tags
 
     def extract_think_tokens(content: str) -> int:
         """Extract and count tokens within <think> tags."""
-        match = re.search(r'<think>(.*?)</think>', content, re.DOTALL)
-        if match:
-            think_content = match.group(1)
-            return len(tokenizer.encode(think_content))
+        reasoning_content, _ = unwrap_reasoning_from_tags(content)
+        if reasoning_content:
+            return len(tokenizer.encode(reasoning_content))
         return 0
 
     result = result.copy()

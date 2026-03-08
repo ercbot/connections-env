@@ -66,7 +66,7 @@ Each puzzle has a set of words which the goal is to group into evenly sized cate
 
 - **Data Splits**: Three splits ({sft_pct:.1f}%, {rl_pct:.1f}%, {test_pct:.1f}%), stratified by difficulty rating
 
-  - **train_sft**: {sft_count:,} puzzles, designated for supervised fine-tuning, see [full game examples dataset](https://huggingface.co/datasets/ericbotti/connections-full-games)
+  - **train_sft**: {sft_count:,} puzzles, designated for supervised fine-tuning, see [full game examples dataset](https://huggingface.co/datasets/ericbotti/connections-gameplay-sft)
 
   - **train_rl**: {rl_count:,} puzzles for reinforcement learning, see [verifiers rl environment](https://app.primeintellect.ai/dashboard/environments/ericbotti/connections)
 
