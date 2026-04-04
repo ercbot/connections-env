@@ -603,8 +603,8 @@ async def main():
         puzzles_to_run = len(salvageable_examples) + len(missing_puzzle_ids)
         print_loop_stats(loop_num, stats, prev_good_count, puzzles_to_run)
 
-        # Check if we're done
-        if stats["bad"] == 0:
+        # Check if we're done (only if we actually have all puzzles covered)
+        if stats["bad"] == 0 and stats["starting_from_scratch"] == 0:
             print("\n🎉 All puzzles solved! No more bad examples to improve.")
             break
 
