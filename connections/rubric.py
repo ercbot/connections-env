@@ -12,10 +12,6 @@ from verifiers.v1 import State, Task
 
 from .utils import GuessRecord
 
-# Token-budget reward constants
-MAX_TOKENS = 2048
-TOKEN_PENALIZATION_THRESHOLD = 0.8
-
 
 @vf.reward(weight=0.5)
 async def valid_guesses(task: Task, state: State) -> float:
@@ -82,32 +78,9 @@ async def efficiency_bonus(task: Task, state: State) -> float:
     return min(min_needed / actual, 1.0)
 
 
-@vf.reward(weight=0.5)
-async def keep_tokens_within_limit_reward_func(task: Task, state: State) -> float:
-    """Reward staying within a token budget.
-
-    Full reward under 80% of MAX_TOKENS, quadratic decay to 0 at MAX_TOKENS.
-    Token count is approximated as character_length / 4.
-    """
-    _ = task
-    text = "".join(
-        m.get("content") or ""
-        for m in (*state.get("prompt", []), *state.get("completion", []))
-    )
-    estimated = len(text) / 4
-    threshold = MAX_TOKENS * TOKEN_PENALIZATION_THRESHOLD
-    if estimated <= threshold:
-        return 1.0
-    if estimated >= MAX_TOKENS:
-        return 0.0
-    progress = (estimated - threshold) / (MAX_TOKENS - threshold)
-    return 1.0 - progress**2
-
-
 REWARDS = [
     valid_guesses,
     almost_found_categories,
     found_categories,
     efficiency_bonus,
-    keep_tokens_within_limit_reward_func,
 ]

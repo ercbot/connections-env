@@ -55,7 +55,6 @@ Pass via `--extra-env-kwargs '{...}'`:
 | `almost_found_categories`           | 0.5    | Count of "one away" guesses for categories never found     |
 | `found_categories`                  | 4.0    | Proportion of categories found (0.0–1.0)                   |
 | `efficiency_bonus`                  | 1.0    | Rewards fewer manual guesses to find all categories        |
-| `keep_tokens_within_limit_reward_func` | 0.5 | Quadratic penalty for exceeding a 2048-token soft budget   |
 
 ### Key behaviors
 
