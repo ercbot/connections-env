@@ -20,6 +20,7 @@ from verifiers.v1 import State, Task
 from .dataset import prep_dataset
 from .prompts import generate_system_prompt
 from .prompts.game_start import current_state_prompt_part
+from .rubric import REWARDS
 from .rulesets import get_ruleset_config
 from .utils import GuessRecord, items_to_string, remove_items_one_at_a_time
 
@@ -256,7 +257,7 @@ def load_taskset(
         toolsets=[vf.Toolset(tools=[guess])],
         setups=[init_game_state],
         stops=[max_mistakes_reached, all_categories_found],
-        rewards=[],  # populated in the rubric commit
+        rewards=REWARDS,
         config=config,
     )
 
