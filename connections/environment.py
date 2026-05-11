@@ -31,6 +31,18 @@ MAX_MISTAKES = 4
 DEFAULT_MAX_TURNS = 10
 DEFAULT_GROUP_SIZE = 4  # fallback only; real value is read per-puzzle
 
+# Default sampling args applied by our Harness. Runner-supplied sampling_args
+# (e.g. from rl.toml) overlay on top of these via dict.update, so any key not
+# explicitly overridden by the runner persists.
+#
+# parallel_tool_calls=False: guarantees only one guess per turn. vLLM and
+# OpenAI both honor this by truncating the model's response to the first
+# tool call (vLLM is post-hoc filter — model still generates the rest, but
+# the harness only ever sees one call). This keeps the RL credit-assignment
+# clean (one action -> one reward) and prevents games from ending in 2 turns
+# when a model emits 4 parallel mistakes.
+DEFAULT_SAMPLING_ARGS = {"parallel_tool_calls": False}
+
 _NYT_CONFIG = get_ruleset_config("nyt")
 
 
@@ -297,4 +309,5 @@ def load_environment(
         is_eval_dataset_raw_puzzles=is_eval_dataset_raw_puzzles,
         max_turns=max_turns,
     )
-    return vf.Env(taskset=taskset)
+    harness = vf.Harness(sampling_args=DEFAULT_SAMPLING_ARGS)
+    return vf.Env(taskset=taskset, harness=harness)

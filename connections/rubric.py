@@ -104,40 +104,10 @@ async def keep_tokens_within_limit_reward_func(task: Task, state: State) -> floa
     return 1.0 - progress**2
 
 
-@vf.reward(weight=0.25)
-async def single_guess_per_turn(task: Task, state: State) -> float:
-    """Reward turns that emit exactly one guess (vs parallel tool calls).
-
-    The default v1 loop processes parallel tool calls sequentially against
-    shared state, so 4 parallel guesses on the first turn would cost 4 mistakes
-    with no learning between them. This reward nudges the model toward one
-    guess per turn.
-
-    Returns the proportion of tool-calling assistant messages that emitted
-    exactly one tool call. 1.0 = always well-behaved.
-    """
-    _ = task
-    tool_call_turns = 0
-    single_call_turns = 0
-    for msg in state.get("completion", []):
-        if msg.get("role") != "assistant":
-            continue
-        calls = msg.get("tool_calls") or []
-        if not calls:
-            continue
-        tool_call_turns += 1
-        if len(calls) == 1:
-            single_call_turns += 1
-    if tool_call_turns == 0:
-        return 0.0
-    return single_call_turns / tool_call_turns
-
-
 REWARDS = [
     valid_guesses,
     almost_found_categories,
     found_categories,
     efficiency_bonus,
     keep_tokens_within_limit_reward_func,
-    single_guess_per_turn,
 ]
