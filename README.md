@@ -3,20 +3,22 @@
 ### Overview
 
 - **Environment ID**: `connections`
-- **Short description**: Multi-turn word puzzle game where players find groups of 4 related words
+- **Short description**: Multi-turn word puzzle game where players find groups of related items.
 - **Tags**: puzzles, word-games, multi-turn, reasoning
 
-### Datasets
+### Dataset
 
-- **Primary dataset(s)**: `ericbotti/connections-puzzles` - Collection of Connections puzzles from PuzzGrid
-- **Source links**: https://huggingface.co/datasets/ericbotti/connections-puzzles
-- **Split sizes**: Train: 8,572 puzzles, Test: 953 puzzles
+- **Primary dataset**: [`ericbotti/connections-puzzles`](https://huggingface.co/datasets/ericbotti/connections-puzzles)
+- **Split sizes**: Train (RL): 7,554 puzzles, Test: 981 puzzles
+
+The dataset includes puzzles scraped from PuzzGrid covering a variety of topics, grid sizes, and difficulty levels. 
 
 ### Task
 
-- **Type**: multi-turn
-- **Parser**: XMLParser (custom ConnectionsParser extending XMLParser)
-- **Rubric overview**: Rewards valid guesses (0.5x), almost-correct guesses (0.5x), found categories (4.0x), and efficiency bonus (1.0x)
+- **Type**: multi-turn, tool-calling
+- **Tool**: `guess(items: list[str])` — submit one guess per turn
+- **Stop conditions**: `max_mistakes_reached` (4 mistakes), `all_categories_found`, plus base-harness `max_turns_reached` / `prompt_too_long`
+- **Ruleset**: NYT only — 4 max mistakes counting from the start, one-away hints enabled, themes revealed immediately on correct guess. 
 
 ### Quickstart
 
@@ -26,108 +28,49 @@ Run an evaluation with default settings:
 uv run vf-eval connections
 ```
 
-Configure model and sampling:
+Configure model, sampling, and example count:
 
 ```bash
-uv run vf-eval connections -m gpt-4o-mini -n 20 -r 3 -t 1024 -T 0.7 -a '{"ruleset": "nyt"}'
+uv run vf-eval connections --model gpt-4.1-mini --num-examples 20 --rollouts-per-example 3 --max-tokens 1024 --temperature 0.7
 ```
-
-Notes:
-
-- Use `-a` / `--env-args` to pass environment-specific configuration as a JSON object.
 
 ### Environment Arguments
 
-| Arg           | Type | Default                            | Description                                           |
-| ------------- | ---- | ---------------------------------- | ----------------------------------------------------- |
-| `ruleset`     | str  | `"nyt"`                            | Game ruleset: `"nyt"` or `"puzzgrid"` (see Rulesets)  |
-| `max_turns`   | int  | `20`                               | Maximum number of conversation turns allowed per game |
-| `dataset`     | str  | `"ericbotti/connections-puzzles"`  | HuggingFace dataset name                              |
-| `train_split` | str  | `"train_rl"`                       | Name of the training split to use                     |
-| `test_split`  | str  | `"test"`                           | Name of the test/eval split to use                    |
+Pass via `--extra-env-kwargs '{...}'`:
 
-### Rulesets
+| Arg                            | Type | Default | Description                                                              |
+| ------------------------------ | ---- | ------- | ------------------------------------------------------------------------ |
+| `max_turns`                    | int  | `10`    | Maximum model turns per game                                             |
+| `is_dataset_raw_puzzles`       | bool | `true`  | If true, run `prep_dataset` on the training set                          |
+| `is_eval_dataset_raw_puzzles`  | bool | `true`  | If true, run `prep_dataset` on the eval set                              |
+| `system_prompt`                | str  | `None`  | Override the generated system prompt                                     |
 
-Two predefined rulesets are available, based on different puzzle platforms:
+`dataset` and `eval_dataset` can be passed programmatically when constructing the env in Python; they default to the train_rl and test splits of `ericbotti/connections-puzzles`.
 
-**NYT (New York Times) - Default**
+### Rewards
 
-```bash
--a '{"ruleset": "nyt"}'
+| Reward                              | Weight | Description                                                |
+| ----------------------------------- | ------ | ---------------------------------------------------------- |
+| `valid_guesses`                     | 0.5    | Proportion of guesses that passed validation               |
+| `almost_found_categories`           | 0.5    | Count of "one away" guesses for categories never found     |
+| `found_categories`                  | 4.0    | Proportion of categories found (0.0–1.0)                   |
+| `efficiency_bonus`                  | 1.0    | Rewards fewer manual guesses to find all categories        |
+
+### Key behaviors
+
+- **One guess per turn (enforced).** The taskset includes a `@vf.setup` handler that defaults `sampling_args.parallel_tool_calls = False` if neither the harness nor the runner specifies it. vLLM and OpenAI both honor this — vLLM by post-hoc truncation, OpenAI by suppressing parallel emissions at sampling time. Keeps the RL credit-assignment clean (one action → one reward) and prevents games from ending in a single turn when a model emits N parallel mistakes.
+- **Auto-completion.** When all but one category has been found, the last is auto-completed and recorded in `guess_history` with `status="auto"`.
+- **Resume / doctoring.** v1-native: callers construct a `State` with populated `mistakes` / `found_categories` / `remaining_items` / `guess_history` and pass it to `harness.run(task, state)`, bypassing the `init_game_state` setup.
+- **BYO harness.** The `parallel_tool_calls=False` default lives on the taskset (via `@vf.setup`), so any harness composed with `load_taskset()` inherits it: `vf.Env(taskset=load_taskset(), harness=your_harness)`.
+
+### Architecture
+
 ```
-
-- 4 max mistakes
-- Mistakes always count (from the start)
-- Shows "one away" hints (3 out of 4 correct)
-- Reveals category themes immediately
-- No end-game theme guessing phase
-
-**PuzzGrid**
-
-```bash
--a '{"ruleset": "puzzgrid"}'
-```
-
-- 3 max mistakes
-- Mistakes only count when 2 categories remain
-- No "one away" hints
-- Themes revealed at end
-- Has end-game theme guessing bonus round
-
-### Metrics
-
-The rubric rewards both accuracy and efficiency:
-
-| Metric                    | Weight | Description                                         |
-| ------------------------- | ------ | --------------------------------------------------- |
-| `reward`                  | -      | Total score (max 5.5 for perfect word-phase play)   |
-| `valid_guesses`           | 0.5    | Proportion of guesses that were valid (not invalid) |
-| `almost_found_categories` | 0.5    | Count of "one away" guesses for unfound categories  |
-| `found_categories`        | 4.0    | Proportion of categories found (0.0-1.0)            |
-| `efficiency_bonus`        | 1.0    | Reward for finding categories with fewer guesses    |
-
-**Theme Guessing Metrics** (only for `puzzgrid` ruleset):
-
-| Metric                             | Weight | Description                            |
-| ---------------------------------- | ------ | -------------------------------------- |
-| `attempted_theme_guessing`         | 0.25   | Attempted to guess themes              |
-| `guessed_correct_number_of_themes` | 0.5    | Provided correct number of guesses     |
-| `found_themes`                     | 4.0    | Proportion of themes correctly guessed |
-| `found_all_themes_bonus`           | 1.0    | Bonus for guessing all themes          |
-
-### Key Features
-
-- When all but one category has been found, the last is auto-completed.
-- All the AI's guesses (including invalid ones) are tracked in the "guess_history" state variable
-
-### Example Usage
-
-**Evaluate on test set with NYT ruleset:**
-
-```bash
-uv run vf-eval connections --model gpt-4.1-mini --rollouts 3
-```
-
-**Use PuzzGrid ruleset with theme guessing:**
-
-```bash
-uv run vf-eval connections --model gpt-4o --env-args '{"ruleset": "puzzgrid"}' --rollouts 5
-```
-
-**Custom max turns:**
-
-```bash
-uv run vf-eval connections --model claude-3-5-sonnet --env-args '{"max_turns": 15}' --rollouts 3
-```
-
-**Generate SFT examples from train_sft split:**
-
-```bash
-uv run vf-eval connections --model gpt-4o-mini --env-args '{"test_split": "train_sft"}' --num-examples 500 --rollouts 1
-```
-
-Then filter for good examples:
-
-```bash
-python scripts/filter_good_sft_examples.py <path_to_results.jsonl> outputs/sft_examples.jsonl
+connections/
+├── environment.py    # source generators, guess tool, @vf.setup, @vf.stop, load_environment factory
+├── rubric.py         # @vf.reward-decorated reward functions, REWARDS list
+├── dataset.py        # prep_dataset — converts raw HF rows to env-shaped tasks
+├── prompts/          # system prompt + game-start prompt template
+├── rulesets.py       # legacy ruleset config (NYT used; PuzzGrid kept for future revival)
+└── utils.py          # GuessRecord dataclass, item formatting helpers
 ```

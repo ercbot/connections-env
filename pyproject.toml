@@ -1,11 +1,11 @@
 [project]
 name = "connections"
 description = "An environment based on the popular puzzle game Connections"
-tags = ["puzzles", "word-games", "text", "game", "multi-turn", "eval", "train", "reasoning"]
-version = "0.1.1"
+tags = ["puzzles", "word-games", "text", "game", "multi-turn", "reasoning", "tool-based"]
+version = "0.2.0"
 requires-python = ">=3.11"
 dependencies = [
-    "verifiers>=0.1.7.post0",
+    "verifiers>=0.1.14",
 ]
 
 [build-system]

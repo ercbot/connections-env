@@ -1,648 +1,320 @@
 """
-Miscellaneous utilities or helpers for the Connections game environment.
+Connections game environment using verifiers.v1 + tool-calling.
+
+NYT ruleset only. PuzzGrid and end-game theme guessing can be re-introduced
+later by adding a ruleset abstraction back.
+
+Resume / doctoring: pass a pre-built `State` to `harness.run(task, state)`
+instead of relying on task-side replay metadata.
 """
+
+from __future__ import annotations
 
 import logging
 from dataclasses import asdict
-from typing import Tuple
 
+import verifiers.v1 as vf
 from datasets import Dataset, load_dataset
-from verifiers import MultiTurnEnv
-from verifiers.types import Messages, State
+from verifiers.v1 import State, Task
 
 from .dataset import prep_dataset
-from .parser import ConnectionsParser
 from .prompts import generate_system_prompt
 from .prompts.game_start import current_state_prompt_part
-from .rubric import ConnectionsRubric
+from .rubric import REWARDS
 from .rulesets import get_ruleset_config
-from .utils import (
-    GuessRecord,
-    is_theme_match,
-    items_to_string,
-    remove_items_one_at_a_time,
-)
+from .utils import GuessRecord, items_to_string, remove_items_one_at_a_time
 
 logger = logging.getLogger(__name__)
 
+# NYT constants. Keep narrow until ruleset abstraction is reintroduced.
+MAX_MISTAKES = 4
+DEFAULT_MAX_TURNS = 10
+DEFAULT_GROUP_SIZE = 4  # fallback only; real value is read per-puzzle
 
-class ConnectionsEnv(MultiTurnEnv):
+
+_NYT_CONFIG = get_ruleset_config("nyt")
+
+
+# =============================================================================
+# Tool
+# =============================================================================
+
+
+async def guess(items: list[str], state: State, task: Task) -> str:
+    """Submit a guess that these items form one of the puzzle's categories.
+
+    Make exactly one `guess` call per turn — you'll see the result before
+    deciding your next guess.
+
+    Args:
+        items: Exactly 4 items that you believe share a category.
     """
-    Environment for the Connections game.
-    """
+    info = task["info"]
+    categories = info["categories"]
+    items_lower = {item.lower() for item in items}
 
-    def __init__(
-        self,
-        ruleset: str = "nyt",
-        dataset: Dataset | None = None,
-        eval_dataset: Dataset | None = None,
-        system_prompt: str | None = None,
-        is_dataset_raw_puzzles: bool = True,
-        is_eval_dataset_raw_puzzles: bool = True,
-        max_turns: int = 10,
-        **kwargs,
-    ):
-        # Get ruleset configuration
-        self.ruleset_config = get_ruleset_config(ruleset)
+    # Group size is per-puzzle (NYT is 4×4, but the dataset also includes
+    # 6×4 puzzles). Read from the first category's member count.
+    group_size = (
+        len(categories[0]["members"]) if categories else DEFAULT_GROUP_SIZE
+    )
 
-        parser: ConnectionsParser = ConnectionsParser()
-        rubric = ConnectionsRubric(parser=parser, ruleset_config=self.ruleset_config)
+    # ---- Validation: cheap rejections that don't cost a mistake ----
 
-        if dataset is None:
-            dataset = load_dataset("ericbotti/connections-puzzles", split="train_rl")
-        if eval_dataset is None:
-            eval_dataset = load_dataset("ericbotti/connections-puzzles", split="test")
-
-        if is_dataset_raw_puzzles:
-            dataset = prep_dataset(dataset, self.ruleset_config)
-        if is_eval_dataset_raw_puzzles:
-            eval_dataset = prep_dataset(eval_dataset, self.ruleset_config)
-
-        # Use provided system prompt or generate one using ruleset configuration
-        system_prompt = system_prompt or generate_system_prompt(self.ruleset_config)
-
-        super().__init__(
-            dataset=dataset,
-            eval_dataset=eval_dataset,
-            system_prompt=system_prompt,
-            parser=parser,
-            rubric=rubric,
-            max_turns=max_turns,
-            **kwargs,
+    if len(items) != group_size:
+        msg = (
+            f"Invalid guess: you submitted {len(items)} items but need exactly "
+            f"{group_size}. This did not cost a mistake; try again."
         )
+        _record(state, items, "invalid", None, msg)
+        return msg
 
-    async def setup_state(self, state: State, **kwargs) -> State:
-        """
-        Setup state with optional resumption from a previous guess_history.
+    all_items_lower = {it.lower() for cat in categories for it in cat["members"]}
+    not_in_game = [it for it in items if it.lower() not in all_items_lower]
+    if not_in_game:
+        label = "item" if len(not_in_game) == 1 else "items"
+        verb = "is" if len(not_in_game) == 1 else "are"
+        msg = (
+            f"Invalid guess: the {label} {items_to_string(not_in_game)} {verb} "
+            f"not in the game. This did not cost a mistake; try again."
+        )
+        _record(state, items, "invalid", None, msg)
+        return msg
 
-        If info contains "resumed_from_guess_history", we reconstruct the game state
-        to match where it was when it was truncated, including:
-        - mistakes count
-        - found_categories count
-        - remaining_items list
-        - guess_history list
+    remaining_lower = {it.lower() for it in state["remaining_items"]}
+    already_found = [it for it in items if it.lower() not in remaining_lower]
+    if already_found:
+        msg = (
+            f"Invalid guess: the items {items_to_string(already_found)} have "
+            f"already been guessed. This did not cost a mistake; try again."
+        )
+        _record(state, items, "invalid", None, msg)
+        return msg
 
-        This allows us to "resume" a game from a checkpoint for doctoring purposes.
-        """
-        info = state.get("info", {})
-        resumed_history = info.get("resumed_from_guess_history")
+    # ---- Match against categories ----
 
-        if resumed_history:
-            # Reconstruct state from the resumed guess history
-            categories = info.get("categories", [])
-            all_items = info.get(
-                "all_words", []
-            )  # Dataset field name kept for compatibility
+    matched_idx = next(
+        (
+            idx
+            for idx, cat in enumerate(categories)
+            if {it.lower() for it in cat["members"]} == items_lower
+        ),
+        None,
+    )
 
-            # Initialize base state
-            state["mistakes"] = 0
-            state["found_categories"] = 0
-            state["remaining_items"] = all_items.copy()  # Start with all items
-            state["guess_history"] = []
+    if matched_idx is not None:
+        category = categories[matched_idx]
+        state["found_categories"] += 1
+        state["remaining_items"] = remove_items_one_at_a_time(
+            state["remaining_items"], category["members"]
+        )
+        msg = (
+            f"Correct! Group members: {items_to_string(category['members'])}. "
+            f"Theme: {category['group']}."
+        )
+        _record(state, items, "correct", matched_idx, msg)
 
-            # Replay the guess history to reconstruct state
-            for guess_record_dict in resumed_history:
-                category_idx = guess_record_dict.get("category_idx")
-
-                # Convert category_idx to int if it's not None (JSON may load as float)
-                if category_idx is not None:
-                    category_idx = int(category_idx)
-
-                state["guess_history"].append(guess_record_dict)
-
-                # Convert dict to GuessRecord for property access and consistency
-                guess_record_obj = GuessRecord(**guess_record_dict)
-
-                if guess_record_obj.is_correct:
-                    # Correctly guessed category (correct or auto)
+        # Auto-complete the last category if exactly one remains.
+        if state["found_categories"] == len(categories) - 1:
+            for idx, cat in enumerate(categories):
+                cat_lower = {it.lower() for it in cat["members"]}
+                rem_lower = {it.lower() for it in state["remaining_items"]}
+                if cat_lower.issubset(rem_lower):
                     state["found_categories"] += 1
-                    if category_idx is not None and category_idx < len(categories):
-                        found_category_items = categories[category_idx]["members"]
-                        # Remove found items from remaining_items, preserving order
-                        # Only remove one instance of each item
-                        state["remaining_items"] = remove_items_one_at_a_time(
-                            state["remaining_items"], found_category_items
-                        )
-                elif guess_record_obj.is_mistake:
-                    # Count mistakes based on ruleset configuration
-                    # Use a temporary state dict to call _should_count_mistakes
-                    temp_state = {
-                        "info": info,
-                        "found_categories": state["found_categories"],
-                    }
-                    if self._should_count_mistakes(temp_state):
-                        state["mistakes"] += 1
-                # invalid guesses don't count as mistakes
-
-            logger.info(
-                f"Resumed game state from guess_history: "
-                f"{state['found_categories']} categories found, "
-                f"{state['mistakes']} mistakes"
-            )
-
-        return state
-
-    async def is_completed(self, messages: Messages, state: State, **kwargs) -> bool:
-        """
-        Check if the game is completed.
-        Sets state["complete_reason"] to track why the game ended:
-        - "max_turns_reached": Maximum turn limit reached
-        - "prompt_too_long": Context became too long
-        - "max_mistakes": Player made too many mistakes
-        - "all_categories_found": All categories found (without theme guessing)
-        - "theme_guessing_complete": Game complete including theme guessing
-        """
-        # Check parent class completion conditions (max turns, prompt too long)
-        if await self.max_turns_reached(state):
-            state["complete_reason"] = "max_turns_reached"
-            return True
-
-        if await self.prompt_too_long(state):
-            state["complete_reason"] = "prompt_too_long"
-            return True
-
-        # Check if we've made max mistakes
-        if state.get("mistakes", 0) >= self.ruleset_config.max_mistakes:
-            state["complete_reason"] = "max_mistakes"
-            return True
-
-        # Check if we've found all categories
-        total_categories = len(state.get("info", {}).get("categories", []))
-        found_categories = state.get("found_categories", 0)
-        # And check that we don't need to guess the theme
-        is_theme_guessing_enabled = self.ruleset_config.end_game_theme_guessing
-
-        if found_categories >= total_categories and not is_theme_guessing_enabled:
-            # Without theme guessing - game is complete
-            state["complete_reason"] = "all_categories_found"
-            return True
-
-        # Check if the the theme has been guessed
-        theme_guesses = state.get("theme_guesses", {})
-
-        if is_theme_guessing_enabled and theme_guesses:
-            # Check if state is NOT an empty dict
-            state["complete_reason"] = "theme_guessing_complete"
-            return True
-
-        return False
-
-    def _should_count_mistakes(self, state: State) -> bool:
-        """
-        Determine if mistakes should be counted based on ruleset configuration.
-        """
-        threshold = self.ruleset_config.mistakes_count_when_x_categories_remain
-        if threshold == "any":
-            return True
-
-        remaining_categories = len(
-            state.get("info", {}).get("categories", [])
-        ) - state.get("found_categories", 0)
-        return remaining_categories <= threshold
-
-    async def env_response(
-        self, messages: Messages, state: State
-    ) -> Tuple[Messages, State]:
-        """
-        Game logic, updates state and returns environment response to the AI based on the rules.
-
-        1. Update game state based players last message
-        2. Generate response based on new state
-        """
-        # Initialize state if not present
-        if "mistakes" not in state:
-            state["mistakes"] = 0
-        if "found_categories" not in state:
-            state["found_categories"] = 0
-        if "remaining_items" not in state:
-            # Get shuffled item order from info (stored during dataset prep)
-            all_items = state.get("info", {}).get(
-                "all_words", []
-            )  # Dataset field name kept for compatibility
-            state["remaining_items"] = all_items.copy()
-        if "guess_history" not in state:
-            # Track all guesses with metadata for reward calculation
-            state["guess_history"] = []
-
-        # Get the AI's last response
-        last_message = messages[-1]
-        if last_message["role"] != "assistant":
-            return [], state
-
-        # ============================================================
-        # PART 1: UPDATE STATE
-        # ============================================================
-        state = await self._update_state(last_message["content"], state)
-
-        # ============================================================
-        # PART 2: GENERATE RESPONSE
-        # ============================================================
-        total_categories = len(state["info"]["categories"])
-        mistakes = state.get("mistakes", 0)
-        found_categories = state.get("found_categories", 0)
-
-        # Still in item guessing phase
-        if (
-            mistakes < self.ruleset_config.max_mistakes
-            and found_categories < total_categories
-        ):
-            response = self._generate_item_phase_response(state)
-            return [{"role": "user", "content": response}], state
-
-        # Transition to theme guessing phase
-        elif (
-            found_categories >= total_categories
-            and self.ruleset_config.end_game_theme_guessing
-            and "theme_guessing_started" not in state
-        ):
-            # Initialize theme guessing
-            state["theme_guessing_started"] = True
-            state["theme_guesses"] = {}
-
-            # Create dynamic XML parser for theme guessing
-            theme_fields = [
-                f"category_{i}_guess" for i in range(1, total_categories + 1)
-            ]
-
-            from verifiers import XMLParser
-
-            state["theme_parser"] = XMLParser(
-                fields=theme_fields, answer_field=theme_fields[0]
-            )
-
-            # Present all found categories without themes
-            categories_display = []
-            xml_format_display = []
-            for i, category in enumerate(state["info"]["categories"], 1):
-                members_str = items_to_string(category["members"])
-                categories_display.append(f"Category {i}: {members_str}")
-                xml_format_display.append(
-                    f"<category_{i}_guess>your theme guess</category_{i}_guess>"
-                )
-
-            categories_text = "\n".join(categories_display)
-            xml_format_text = "\n".join(xml_format_display)
-
-            return [
-                {
-                    "role": "user",
-                    "content": f"🎉 Item guessing complete! Now guess the themes for bonus points:\n\n{categories_text}\n\nPlease guess the theme for each category using this format:\n\n{xml_format_text}",
-                }
-            ], state
-
-        # In theme guessing phase (already started)
-        elif "theme_guessing_started" in state and state.get("theme_guesses"):
-            response = self._generate_theme_results_response(state)
-            return [{"role": "user", "content": response}], state
-
-        # Game over - no more responses needed (return empty messages)
-        else:
-            return [], state
-
-    async def _update_state(self, last_message_content: str, state: State) -> State:
-        """
-        Update state based on player's last message. All logic inline.
-        """
-        total_categories = len(state["info"]["categories"])
-
-        # Determine if we're in item phase or theme phase
-        currently_in_item_phase = (
-            state.get("mistakes", 0) < self.ruleset_config.max_mistakes
-            and state.get("found_categories", 0) < total_categories
-        )
-        currently_in_theme_phase = "theme_guessing_started" in state
-
-        # ============================================================
-        # ITEM GUESSING PHASE
-        # ============================================================
-        if currently_in_item_phase:
-            # Parse the AI's guess
-            try:
-                guessed_items, num_guess_tags = self.parser.parse_answer_as_list(
-                    last_message_content
-                )
-                guessed_items_lower = set([item.lower() for item in guessed_items])
-            except Exception as e:
-                # If parsing fails, don't count as mistake - just ask to retry
-                error_msg = f"Invalid guess format: {str(e)}. This did not cost a mistake, try again."
-                # Record invalid guess
-                guess_record = GuessRecord(
-                    items=[], status="invalid", result_message=error_msg
-                )
-                state["guess_history"].append(asdict(guess_record))
-                return state
-
-            # Prepare note for multiple guess tags (only shown for valid guesses)
-            multiple_guess_note = ""
-            if num_guess_tags > 1:
-                items_str = items_to_string(guessed_items)
-                multiple_guess_note = f"Note: {num_guess_tags} guesses detected in your answer, using the last one: {items_str}\n\n"
-
-            # Get expected group size from the first category
-            expected_group_size = (
-                len(state["info"]["categories"][0]["members"])
-                if state["info"]["categories"]
-                else 4
-            )
-
-            # Validate the guess - check count
-            if len(guessed_items) != expected_group_size:
-                error_msg = (
-                    f"Invalid guess, you guessed {len(guessed_items)} items but need exactly {expected_group_size}. "
-                    f"This did not cost a mistake, try again.\n"
-                )
-                # Record invalid guess
-                guess_record = GuessRecord(
-                    items=guessed_items, status="invalid", result_message=error_msg
-                )
-                state["guess_history"].append(asdict(guess_record))
-                return state
-
-            # Check if all guessed items are valid (case-insensitive)
-            # Check against all items from categories (not just remaining)
-            all_items_from_categories = set()
-            for category in state["info"]["categories"]:
-                all_items_from_categories.update(category["members"])
-            all_items_lower = {item.lower() for item in all_items_from_categories}
-            invalid_items = [
-                item for item in guessed_items if item.lower() not in all_items_lower
-            ]
-            if invalid_items:
-                item_label = "item" if len(invalid_items) == 1 else "items"
-                invalid_items_str = items_to_string(invalid_items)
-                error_msg = (
-                    f"Invalid guess, the {item_label} {invalid_items_str} {'is' if len(invalid_items) == 1 else 'are'} not in the game. "
-                    f"This did not cost a mistake, try again.\n"
-                )
-                # Record invalid guess
-                guess_record = GuessRecord(
-                    items=guessed_items, status="invalid", result_message=error_msg
-                )
-                state["guess_history"].append(asdict(guess_record))
-                return state
-
-            # Check if all items guessed are in remaining_items
-            remaining_items_lower = {item.lower() for item in state["remaining_items"]}
-            items_not_in_remaining = [
-                item
-                for item in guessed_items_lower
-                if item not in remaining_items_lower
-            ]
-            if items_not_in_remaining:
-                error_msg = f"Invalid guess, the items {items_to_string(items_not_in_remaining)} have already been guessed. This did not cost a mistake, try again."
-                # Record invalid guess
-                guess_record = GuessRecord(
-                    items=guessed_items, status="invalid", result_message=error_msg
-                )
-                state["guess_history"].append(asdict(guess_record))
-                return state
-
-            # Check if the guess matches a category
-            correct_category = None
-            correct_category_idx = None
-            for idx, category in enumerate(state["info"]["categories"]):
-                category_items = set([item.lower() for item in category["members"]])
-                if guessed_items_lower == category_items:
-                    correct_category = category
-                    correct_category_idx = idx
+                    state["remaining_items"] = remove_items_one_at_a_time(
+                        state["remaining_items"], cat["members"]
+                    )
+                    auto_msg = (
+                        f"All categories found! The last category was: "
+                        f"{cat['group']} - {items_to_string(cat['members'])}."
+                    )
+                    _record(state, cat["members"], "auto", idx, auto_msg)
+                    msg = msg + "\n\n" + auto_msg
                     break
 
-            if correct_category:
-                # Correct guess! Store the original capitalized items from the category
-                state["found_categories"] += 1
-                found_category_items = correct_category["members"]
-                # Remove found items from remaining_items, preserving order
-                # Only remove one instance of each item
-                state["remaining_items"] = remove_items_one_at_a_time(
-                    state["remaining_items"], found_category_items
-                )
+        return msg + "\n\n" + _current_state_block(state, task)
 
-                # Generate result message for correct guess
-                members_str = items_to_string(correct_category["members"])
-                result_msg = (
-                    f"{multiple_guess_note}Correct! Group members: {members_str}."
-                )
-                if self.ruleset_config.reveal_themes_immediately:
-                    result_msg += f" Theme: {correct_category['group']}."
-                else:
-                    result_msg += " The theme will be revealed at the end of the game."
+    # Incorrect: count a mistake. Detect one-away.
+    state["mistakes"] += 1
+    one_away_idx = next(
+        (
+            idx
+            for idx, cat in enumerate(categories)
+            if len(items_lower & {it.lower() for it in cat["members"]})
+            == group_size - 1
+        ),
+        None,
+    )
+    if one_away_idx is not None:
+        msg = "One away! Incorrect guess."
+        _record(state, items, "one_away", one_away_idx, msg)
+    else:
+        msg = "Incorrect guess."
+        _record(state, items, "incorrect", None, msg)
+    return msg + "\n\n" + _current_state_block(state, task)
 
-                # Record valid + correct guess
-                guess_record = GuessRecord(
-                    items=guessed_items,
-                    status="correct",
-                    category_idx=correct_category_idx,
-                    result_message=result_msg,
-                )
-                state["guess_history"].append(asdict(guess_record))
 
-                # Auto-complete if only 1 category remains
-                if state["found_categories"] == total_categories - 1:
-                    # Find the last remaining category
-                    remaining_items_lower = {
-                        item.lower() for item in state["remaining_items"]
-                    }
-                    for idx, category in enumerate(state["info"]["categories"]):
-                        category_items_lower = {
-                            item.lower() for item in category["members"]
-                        }
-                        # Check if this category hasn't been found yet
-                        # A category is found if ALL its items are NOT in remaining_items
-                        if (
-                            category_items_lower.intersection(remaining_items_lower)
-                            == category_items_lower
-                        ):
-                            # Auto-complete this category
-                            state["found_categories"] += 1
-                            auto_completed_items = category["members"]
-                            # Remove auto-completed items from remaining_items, preserving order
-                            # Only remove one instance of each item
-                            state["remaining_items"] = remove_items_one_at_a_time(
-                                state["remaining_items"], auto_completed_items
-                            )
-
-                            # Generate result message for auto-completed category
-                            if self.ruleset_config.reveal_themes_immediately:
-                                members_str = items_to_string(category["members"])
-                                auto_result_msg = f"All categories found! The last category was: {category['group']} - {members_str}"
-                            else:
-                                auto_result_msg = "All categories found! The last category has been auto-completed."
-
-                            # Record auto-completed category
-                            auto_guess_record = GuessRecord(
-                                items=category["members"],
-                                status="auto",
-                                category_idx=idx,
-                                result_message=auto_result_msg,
-                            )
-                            state["guess_history"].append(asdict(auto_guess_record))
-                            break
-            else:
-                # Incorrect guess
-                if self._should_count_mistakes(state):
-                    state["mistakes"] += 1
-
-                # Check for "One Away" if ruleset allows
-                # IMPORTANT: Only count as one_away if it was a VALID guess
-                # (already validated: correct count, all items in game, no already-found items)
-                guess_status = "incorrect"
-                one_away_category_idx = None
-
-                if self.ruleset_config.show_one_away_hints:
-                    max_correct = 0
-                    best_category_idx = None
-                    for idx, category in enumerate(state["info"]["categories"]):
-                        category_items = set(
-                            [item.lower() for item in category["members"]]
-                        )
-                        correct_count = len(
-                            guessed_items_lower.intersection(category_items)
-                        )
-                        if correct_count > max_correct:
-                            max_correct = correct_count
-                            best_category_idx = idx
-
-                    if max_correct == expected_group_size - 1:
-                        guess_status = "one_away"
-                        one_away_category_idx = best_category_idx
-
-                # Generate result message for incorrect guess
-                if guess_status == "one_away":
-                    result_msg = (
-                        f"{multiple_guess_note}One away! Incorrect guess, try again."
-                    )
-                else:
-                    result_msg = f"{multiple_guess_note}Incorrect guess, try again."
-
-                # Record valid but incorrect guess
-                guess_record = GuessRecord(
-                    items=guessed_items,
-                    status=guess_status,
-                    category_idx=one_away_category_idx,
-                    result_message=result_msg,
-                )
-                state["guess_history"].append(asdict(guess_record))
-
-        # ============================================================
-        # THEME GUESSING PHASE
-        # ============================================================
-        elif currently_in_theme_phase:
-            # Parse theme guesses using the dynamic XML parser
-            try:
-                theme_parser = state.get("theme_parser")
-                if not theme_parser:
-                    logger.error("Theme parser not found in state")
-                    state["theme_parse_error"] = True
-                    return state
-
-                # Parse the XML content
-                parsed = theme_parser.parse(last_message_content)
-                guesses = {}
-
-                # Extract all category guesses from the parsed namespace
-                for i in range(1, total_categories + 1):
-                    field_name = f"category_{i}_guess"
-                    theme_guess = getattr(parsed, field_name, None)
-                    if theme_guess and theme_guess.strip():
-                        guesses[i] = theme_guess.strip()
-
-                if not guesses:
-                    state["theme_parse_error"] = True
-                    return state
-
-                # Store guesses in state for scoring
-                state["theme_guesses"] = guesses
-                state["theme_parse_error"] = False
-
-            except Exception:
-                state["theme_parse_error"] = True
-
-        return state
-
-    def _generate_item_phase_response(self, state: State) -> str:
-        """
-        Generate response text for item grouping phase based on current state.
-        """
-        total_categories = len(state["info"]["categories"])
-        counting_mistakes = self._should_count_mistakes(state)
-
-        # Build the "Results of Your Guess" section
-        results_parts = ["**Results of Your Guess**"]
-
-        # Get the last guess from guess_history
-        guess_history = state.get("guess_history", [])
-        if guess_history:
-            last_guess = guess_history[-1]
-            result_message = last_guess.get("result_message", "")
-
-            if result_message:
-                results_parts.append(result_message)
-
-                # If there was an auto-completed category (second-to-last in history),
-                # check if we need to append its message too
-                if len(guess_history) >= 2:
-                    second_last = guess_history[-2]
-                    if (
-                        second_last.get("status") == "correct"
-                        and last_guess.get("status") == "auto"
-                    ):
-                        # The auto-complete message is already in last_guess result_message
-                        # But we need to prepend the correct guess message
-                        correct_msg = second_last.get("result_message", "")
-                        if correct_msg:
-                            results_parts[-1] = f"{correct_msg}\n\n{results_parts[-1]}"
-
-        # Build the "Current Game State" section using current_state_prompt_part
-        current_state = current_state_prompt_part(
-            found_categories=state["found_categories"],
-            total_categories=total_categories,
-            mistakes=state["mistakes"],
-            max_mistakes=self.ruleset_config.max_mistakes,
-            counting_mistakes=counting_mistakes,
-            items=state["remaining_items"],
+def _record(
+    state: State,
+    items: list[str],
+    status: str,
+    category_idx: int | None,
+    result_message: str,
+) -> None:
+    state["guess_history"].append(
+        asdict(
+            GuessRecord(
+                items=list(items),
+                status=status,
+                category_idx=category_idx,
+                result_message=result_message,
+            )
         )
+    )
 
-        # Combine both sections
-        response_parts = ["\n".join(results_parts), current_state]
-        return "\n\n".join(response_parts)
 
-    def _generate_theme_results_response(self, state: State) -> str:
-        """
-        Generate response text for theme guessing results.
-        """
-        # If there was a parsing error, show format instructions
-        if state.get("theme_parse_error"):
-            total_categories = len(state["info"]["categories"])
-            xml_format_display = []
-            for i in range(1, total_categories + 1):
-                xml_format_display.append(
-                    f"<category_{i}_guess>your theme guess</category_{i}_guess>"
-                )
-            xml_format_text = "\n".join(xml_format_display)
-            return f"Please format your theme guesses using the XML format:\n\n{xml_format_text}"
+def _current_state_block(state: State, task: Task) -> str:
+    return current_state_prompt_part(
+        found_categories=state["found_categories"],
+        total_categories=len(task["info"]["categories"]),
+        mistakes=state["mistakes"],
+        max_mistakes=MAX_MISTAKES,
+        counting_mistakes=True,  # NYT always counts
+        items=state["remaining_items"],
+    )
 
-        # Calculate theme guess accuracy for display
-        correct_themes = 0
-        total_categories = len(state["info"]["categories"])
-        guesses = state.get("theme_guesses", {})
 
-        theme_results = []
-        for i, category in enumerate(state["info"]["categories"], 1):
-            actual_theme = category["group"]
-            guessed_theme = guesses.get(i, None)
+# =============================================================================
+# Setup + stops
+# =============================================================================
 
-            # Enhanced theme matching with linking terms
-            is_correct = is_theme_match(
-                actual_theme, guessed_theme, category.get("linking_terms", [])
-            )
-            if is_correct:
-                correct_themes += 1
 
-            status = "✓" if is_correct else "✗"
-            guess_display = guessed_theme if guessed_theme else "(no guess)"
-            theme_results.append(
-                f"Category {i}: {actual_theme} {status} (You guessed: {guess_display})"
-            )
+@vf.setup
+async def init_game_state(task: Task, state: State) -> None:
+    """Initialize fresh per-rollout game state.
 
-        results_text = "\n".join(theme_results)
-        return f"Theme guessing complete!\n\n{results_text}\n\nYou got {correct_themes}/{total_categories} themes correct! Game finished."
+    Resume is supported via the v1-native path: callers construct a State with
+    populated mistakes/found_categories/remaining_items/guess_history and pass
+    it directly to `harness.run(task, state)` — bypassing this setup entirely.
+    """
+    state["mistakes"] = 0
+    state["found_categories"] = 0
+    state["remaining_items"] = task["info"]["all_words"].copy()
+    state["guess_history"] = []
+
+
+@vf.setup
+async def force_one_guess_per_turn(task: Task, state: State) -> None:
+    _ = task  # required by v1 setup handler signature contract
+    """Default `parallel_tool_calls=False` so only one guess is processed per turn.
+
+    Lives on the taskset (not the harness) so it survives BYO harnesses —
+    anyone composing this taskset with a custom Harness still gets the
+    constraint. Uses `setdefault` so the runner (e.g. rl.toml sampling_args)
+    can still explicitly opt back into parallel calls.
+
+    vLLM honors this by post-hoc truncation (model generates extra calls but
+    only the first is returned); OpenAI suppresses parallel emissions at
+    sampling time. Either way, the rollout sees one tool call per turn,
+    keeping RL credit-assignment clean.
+    """
+    runtime_sampling = state["runtime"].setdefault("sampling_args", {})
+    runtime_sampling.setdefault("parallel_tool_calls", False)
+
+
+@vf.stop
+async def max_mistakes_reached(task: Task, state: State) -> bool:
+    _ = task  # required by v1 stop handler signature contract
+    return state.get("mistakes", 0) >= MAX_MISTAKES
+
+
+@vf.stop
+async def all_categories_found(task: Task, state: State) -> bool:
+    total = len(task["info"]["categories"])
+    return total > 0 and state.get("found_categories", 0) >= total
+
+
+# =============================================================================
+# Factories
+# =============================================================================
+
+
+def _row_to_task(row: dict, max_turns: int) -> dict:
+    return {
+        "prompt": [{"role": "user", "content": row["question"]}],
+        "info": row["info"],
+        "max_turns": max_turns,
+    }
+
+
+def load_taskset(
+    dataset: Dataset | None = None,
+    eval_dataset: Dataset | None = None,
+    system_prompt: str | None = None,
+    is_dataset_raw_puzzles: bool = True,
+    is_eval_dataset_raw_puzzles: bool = True,
+    max_turns: int = DEFAULT_MAX_TURNS,
+    config: vf.TasksetConfig | None = None,
+) -> vf.Taskset:
+    if dataset is None:
+        dataset = load_dataset("ericbotti/connections-puzzles", split="train_rl")
+    if eval_dataset is None:
+        eval_dataset = load_dataset("ericbotti/connections-puzzles", split="test")
+
+    if is_dataset_raw_puzzles:
+        dataset = prep_dataset(dataset, _NYT_CONFIG)
+    if is_eval_dataset_raw_puzzles:
+        eval_dataset = prep_dataset(eval_dataset, _NYT_CONFIG)
+
+    sys_prompt = system_prompt or generate_system_prompt(_NYT_CONFIG)
+
+    def source():
+        for row in dataset:
+            yield _row_to_task(row, max_turns)
+
+    def eval_source():
+        for row in eval_dataset:
+            yield _row_to_task(row, max_turns)
+
+    return vf.Taskset(
+        source=source,
+        eval_source=eval_source,
+        system_prompt=sys_prompt,
+        toolsets=[vf.Toolset(tools=[guess])],
+        setups=[init_game_state, force_one_guess_per_turn],
+        stops=[max_mistakes_reached, all_categories_found],
+        rewards=REWARDS,
+        config=config,
+    )
+
+
+def load_environment(
+    dataset: Dataset | None = None,
+    eval_dataset: Dataset | None = None,
+    system_prompt: str | None = None,
+    is_dataset_raw_puzzles: bool = True,
+    is_eval_dataset_raw_puzzles: bool = True,
+    max_turns: int = DEFAULT_MAX_TURNS,
+    **kwargs,
+) -> vf.Env:
+    """Load the Connections environment (NYT ruleset, v1 + tool-calling).
+
+    Args:
+        dataset: Optional pre-loaded training dataset
+            (default: HF ericbotti/connections-puzzles train_rl split).
+        eval_dataset: Optional pre-loaded eval dataset.
+        system_prompt: Optional override for the system prompt.
+        is_dataset_raw_puzzles: If True, run prep_dataset on the training set.
+        is_eval_dataset_raw_puzzles: If True, run prep_dataset on the eval set.
+        max_turns: Maximum model turns per game.
+        **kwargs: Forwarded to vf.Env (currently unused).
+    """
+    taskset = load_taskset(
+        dataset=dataset,
+        eval_dataset=eval_dataset,
+        system_prompt=system_prompt,
+        is_dataset_raw_puzzles=is_dataset_raw_puzzles,
+        is_eval_dataset_raw_puzzles=is_eval_dataset_raw_puzzles,
+        max_turns=max_turns,
+    )
+    return vf.Env(taskset=taskset)
