@@ -6,7 +6,7 @@
 - **Short description**: Multi-turn word puzzle game where players find groups of related items.
 - **Tags**: puzzles, word-games, multi-turn, reasoning
 
-### Datasets
+### Dataset
 
 - **Primary dataset**: [`ericbotti/connections-puzzles`](https://huggingface.co/datasets/ericbotti/connections-puzzles)
 - **Split sizes**: Train (RL): 7,554 puzzles, Test: 981 puzzles
