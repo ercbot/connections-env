@@ -1,0 +1,35 @@
+# SFT config for connections-gameplay-sft
+# Base model: Qwen/Qwen3.5-9B
+# Dataset: 714 train examples, p95=1268 tokens, max=2448 tokens
+# Target hardware: 4x H100 80GB
+#
+# Epoch math: 714 examples / batch_size=64 ≈ 11 steps/epoch → ~5 epochs = 55 steps
+#
+# Usage (4 GPUs):
+#   uv run torchrun --nproc-per-node=4 src/prime_rl/trainer/sft/train.py @ configs/sft.toml
+
+max_steps = 60  # ~5 epochs over 714 examples at batch_size=64
+
+[model]
+name = "Qwen/Qwen3.5-9B"
+
+use_renderer = true
+
+[renderer]
+name = "qwen3.5-doublethink"
+
+[data]
+name = "ericbotti/connections-gameplay-sft"
+seq_len = 4096  # p95=1268, max=2448 — plenty of headroom
+batch_size = 64
+micro_batch_size = 2  # 2 per GPU across 4 GPUs = 8 total; gradient accumulates to 64
+
+[optim]
+lr = 1e-5
+
+[ckpt]
+interval = 10
+
+[wandb]
+project = "connections-sft"
+name = "qwen3.5-9b-sft"

@@ -1,0 +1,55 @@
+# RL config for connections training
+# Base model: SFT checkpoint (update [model].name before running)
+# Hardware: 4x A100 80GB
+#
+# GPU split: 2 train + 2 infer
+#   - Trainer: FSDP2 across 2 GPUs (~36GB/GPU for 9B model + optimizer)
+#   - Inference: vLLM with tensor parallelism across 2 GPUs (~9GB/GPU for weights)
+#
+# Usage:
+#   uv run rl @ configs/rl.toml
+
+max_steps = 1000
+seq_len = 4096  # matches SFT; p95=1268 tokens, max=2448 tokens
+
+[deployment]
+num_train_gpus = 2
+num_infer_gpus = 2
+
+[model]
+name = "ericbotti/connections-qwen3.5-9b-sft"  # update to your SFT checkpoint
+
+use_renderer = true
+
+[renderer]
+name = "qwen3.5-doublethink"
+
+[wandb]
+project = "connections-rl"
+name = "qwen3.5-9b-rl"
+
+[ckpt]
+interval = 50
+keep = 5
+
+[orchestrator]
+batch_size = 256
+rollouts_per_example = 8  # GRPO group size
+
+[[orchestrator.env]]
+id = "connections"
+name = "connections"
+args = { ruleset = "nyt", max_turns = 15 }
+
+[orchestrator.sampling]
+max_tokens = 2048
+temperature = 1.0
+
+[trainer]
+
+[trainer.optim]
+lr = 1e-6  # lower than SFT — RL updates are noisier
+
+[inference.parallel]
+dp = 1
+tp = 2  # tensor parallel across 2 infer GPUs
