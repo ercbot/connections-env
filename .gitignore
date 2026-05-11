@@ -16,6 +16,7 @@ scripts/**/*.txt
 scripts/*.jsonl
 scripts/*.json
 scripts/**/*.txt
+scripts/archive/
 
 # Output directories
 outputs/

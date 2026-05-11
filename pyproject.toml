@@ -5,7 +5,7 @@ tags = ["puzzles", "word-games", "text", "game", "multi-turn", "eval", "train", 
 version = "0.1.1"
 requires-python = ">=3.11"
 dependencies = [
-    "verifiers==0.1.6.post0",
+    "verifiers>=0.1.7.post0",
 ]
 
 [build-system]
@@ -23,5 +23,5 @@ unfixable = ["T20"]
 
 [dependency-groups]
 dev = [
-    "transformers>=4.57.1",
+    "transformers>=4.57.1"
 ]
