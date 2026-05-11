@@ -28,8 +28,8 @@ logger = logging.getLogger(__name__)
 
 # NYT constants. Keep narrow until ruleset abstraction is reintroduced.
 MAX_MISTAKES = 4
-EXPECTED_GROUP_SIZE = 4
 DEFAULT_MAX_TURNS = 10
+DEFAULT_GROUP_SIZE = 4  # fallback only; real value is read per-puzzle
 
 _NYT_CONFIG = get_ruleset_config("nyt")
 
@@ -52,12 +52,18 @@ async def guess(items: list[str], state: State, task: Task) -> str:
     categories = info["categories"]
     items_lower = {item.lower() for item in items}
 
+    # Group size is per-puzzle (NYT is 4×4, but the dataset also includes
+    # 6×4 puzzles). Read from the first category's member count.
+    group_size = (
+        len(categories[0]["members"]) if categories else DEFAULT_GROUP_SIZE
+    )
+
     # ---- Validation: cheap rejections that don't cost a mistake ----
 
-    if len(items) != EXPECTED_GROUP_SIZE:
+    if len(items) != group_size:
         msg = (
             f"Invalid guess: you submitted {len(items)} items but need exactly "
-            f"{EXPECTED_GROUP_SIZE}. This did not cost a mistake; try again."
+            f"{group_size}. This did not cost a mistake; try again."
         )
         _record(state, items, "invalid", None, msg)
         return msg
@@ -134,7 +140,7 @@ async def guess(items: list[str], state: State, task: Task) -> str:
             idx
             for idx, cat in enumerate(categories)
             if len(items_lower & {it.lower() for it in cat["members"]})
-            == EXPECTED_GROUP_SIZE - 1
+            == group_size - 1
         ),
         None,
     )
