@@ -31,17 +31,6 @@ MAX_MISTAKES = 4
 DEFAULT_MAX_TURNS = 10
 DEFAULT_GROUP_SIZE = 4  # fallback only; real value is read per-puzzle
 
-# Default sampling args applied by our Harness. Runner-supplied sampling_args
-# (e.g. from rl.toml) overlay on top of these via dict.update, so any key not
-# explicitly overridden by the runner persists.
-#
-# parallel_tool_calls=False: guarantees only one guess per turn. vLLM and
-# OpenAI both honor this by truncating the model's response to the first
-# tool call (vLLM is post-hoc filter — model still generates the rest, but
-# the harness only ever sees one call). This keeps the RL credit-assignment
-# clean (one action -> one reward) and prevents games from ending in 2 turns
-# when a model emits 4 parallel mistakes.
-DEFAULT_SAMPLING_ARGS = {"parallel_tool_calls": False}
 
 _NYT_CONFIG = get_ruleset_config("nyt")
 
@@ -214,6 +203,25 @@ async def init_game_state(task: Task, state: State) -> None:
     state["guess_history"] = []
 
 
+@vf.setup
+async def force_one_guess_per_turn(task: Task, state: State) -> None:
+    _ = task  # required by v1 setup handler signature contract
+    """Default `parallel_tool_calls=False` so only one guess is processed per turn.
+
+    Lives on the taskset (not the harness) so it survives BYO harnesses —
+    anyone composing this taskset with a custom Harness still gets the
+    constraint. Uses `setdefault` so the runner (e.g. rl.toml sampling_args)
+    can still explicitly opt back into parallel calls.
+
+    vLLM honors this by post-hoc truncation (model generates extra calls but
+    only the first is returned); OpenAI suppresses parallel emissions at
+    sampling time. Either way, the rollout sees one tool call per turn,
+    keeping RL credit-assignment clean.
+    """
+    runtime_sampling = state["runtime"].setdefault("sampling_args", {})
+    runtime_sampling.setdefault("parallel_tool_calls", False)
+
+
 @vf.stop
 async def max_mistakes_reached(task: Task, state: State) -> bool:
     _ = task  # required by v1 stop handler signature contract
@@ -273,7 +281,7 @@ def load_taskset(
         eval_source=eval_source,
         system_prompt=sys_prompt,
         toolsets=[vf.Toolset(tools=[guess])],
-        setups=[init_game_state],
+        setups=[init_game_state, force_one_guess_per_turn],
         stops=[max_mistakes_reached, all_categories_found],
         rewards=REWARDS,
         config=config,
@@ -309,5 +317,4 @@ def load_environment(
         is_eval_dataset_raw_puzzles=is_eval_dataset_raw_puzzles,
         max_turns=max_turns,
     )
-    harness = vf.Harness(sampling_args=DEFAULT_SAMPLING_ARGS)
-    return vf.Env(taskset=taskset, harness=harness)
+    return vf.Env(taskset=taskset)
